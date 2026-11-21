@@ -9,7 +9,7 @@
 .global op1f_art_veffbode
 .type op1f_art_veffbode, STT_OBJECT
 op1f_art_veffbode:
-    .long 0x31545241, 1, 287162, 1
+    .long 0x31545241, 1, 287162, 5
     .ascii "veffbode"
     .fill 8, 1, 0
 .global op1f_art_veffbode_path

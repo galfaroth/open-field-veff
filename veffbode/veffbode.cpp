@@ -80,7 +80,7 @@ static inline const volatile int* extras_of(u32 place) {
 }
 
 // ---------------------------------------------------------------- the sound (audio thread)
-struct Allpass { i32 x1, x2, y1, y2; };
+struct Allpass { i32 x[2], y[2]; };                                    // in z^2: slot (frame & 1) holds the frame two back
 struct Channel { Allpass a[STAGES], b[STAGES]; i32 a_late, last, lp, hp; };
 struct State {
     Channel ch[CHANNELS];
@@ -88,27 +88,21 @@ struct State {
     i32 mix;
     u32 spos[CHANNELS][SMEARS];
     i32 smear[CHANNELS][SMEARS][SMEAR_ROOM];
+    u32 dqs[BLOCK];                                                    // a chunk's scratch: the delay, the carrier,
+    i32 csb[BLOCK], snb[BLOCK], ta[BLOCK], tb[BLOCK], wet[CHANNELS][BLOCK];   // the two Hilbert paths, the wet sides
     i16 line[CHANNELS][LINE];
 };
 enum { STATE_BYTES = (sizeof(State) + 31) & ~31 };
-static_assert(STATE_BYTES == 499808, "the recipe's state_bytes");
+static_assert(STATE_BYTES == 501600, "the recipe's state_bytes");
 
 static volatile u32 level;                                             // the last block's wet peak, for the page's combs
 
 static inline i32 soft(i32 x) { return subq(x, mulq(mulq(x, x), x) >> 2); }   // the feedback's knee: x - x^3/4
 
-static inline i32 allpass(Allpass* s, i32 c, i32 x) {
-    i32 y = mulq(c, x + s->y2) - s->x2;
-    s->x2 = s->x1; s->x1 = x;
-    s->y2 = s->y1; s->y1 = y;
+static inline i32 allpass(Allpass* s, i32 c, i32 x, u32 p) {
+    const i32 y = mulq(c, x + s->y[p]) - s->x[p];
+    s->x[p] = x; s->y[p] = y;
     return y;
-}
-
-static inline i32 sine(u32 phase) {
-    u32 i = phase >> 22;
-    i32 f = (i32)((phase >> 6) & 0xffffu) << 15;
-    i32 s0 = SINE[i], s1 = SINE[i + 1];
-    return s0 + mulq((s1 >> 1) - (s0 >> 1), f) * 2;
 }
 
 static inline int held(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -145,6 +139,118 @@ static void clear_small(State& st) {                                   // what a
     st.mix = 0;
 }
 
+#define SMEAR_LEN_C(c, k) ((c) ? (k) == 0 ? 151 : (k) == 1 ? 241 : (k) == 2 ? 397 : 601 : (k) == 0 ? 142 : (k) == 1 ? 229 : (k) == 2 ? 379 : 563)
+static_assert(SMEAR_LEN_C(0, 0) == 142 && SMEAR_LEN_C(0, 3) == 563 && SMEAR_LEN_C(1, 0) == 151 && SMEAR_LEN_C(1, 3) == 601, "as SMEAR_LEN");
+// The smear's gain is at most 0.7: a 16-bit product (the sample's top half times g in Q15) is plenty.
+static inline i32 mulg(i32 x, i32 g16) {
+#ifdef OP1F_HOST
+    return (int)((x >> 16) * g16) * 2;
+#else
+    return __builtin_bfin_mult_fr1x32((short)(x >> 16), (short)g16);
+#endif
+}
+template <int LEN> static inline __attribute__((always_inline)) i32 smear_stage(i32* buf, u32& at, i32 y, i32 g16) {
+    const i32 vv = buf[at];
+    const i32 w = addq(y, mulg(vv, g16));
+    buf[at] = w;
+    at = at + 1 >= (u32)LEN ? 0 : at + 1;
+    return subq(vv, mulg(w, g16));
+}
+
+// One side of one frame: the line, the smear, the tone and the shifter. Inlined into the frame loop; the filters'
+// state is the block's local copy (process copies it in and back), so the loop touches the working memory only for
+// the lines and the smear's buffers.
+template <u32 P, int C> static inline __attribute__((always_inline)) i32 side(Channel& ch, i16* line, i32 (*smear)[SMEAR_ROOM], u32* spos,
+                                                      i32 x, u32 wpos, u32 whole, u32 frac, u32 filled,
+                                                      i32 g, i32 tone, i32 cs, i32 sn, i32 sb) {
+    line[wpos] = (i16)(x >> 16);
+    i32 y = 0;
+    if (whole + 1u <= filled) {                                        // older than a fresh start is silence
+        int r0 = (int)wpos - (int)whole; if (r0 < 0) r0 += LINE;
+        const int r1 = r0 == 0 ? LINE - 1 : r0 - 1;
+        const i32 a0 = line[r0], a1 = line[r1];
+        y = (a0 * 256 + (a1 - a0) * (i32)frac) * 256;                  // in 256ths of a sample first: no overflow
+    } else if (whole == 0u) y = (i32)line[wpos] * 65536;
+    if (g) {                                                           // smear: two all-pass delays; at 0 none at all
+        y = smear_stage<SMEAR_LEN_C(C, 2)>(smear[2], spos[2], y, g);
+        y = smear_stage<SMEAR_LEN_C(C, 3)>(smear[3], spos[3], y, g);
+    }
+    ch.lp = addq(ch.lp, mulq(subq(y, ch.lp), tone));
+    ch.hp = addq(ch.hp, mulq(subq(ch.lp, ch.hp), 12240000));
+    const i32 fx = subq(ch.lp, ch.hp) >> 3;                            // Q28 into the shifter
+    i32 a = fx, b = fx;
+    for (int j = 0; j < STAGES; ++j) a = allpass(&ch.a[j], HILBERT_A[j], a, P);
+    for (int j = 0; j < STAGES; ++j) b = allpass(&ch.b[j], HILBERT_B[j], b, P);
+    const i32 re = ch.a_late;
+    ch.a_late = a;
+    const i32 o = mulq(re, cs) + mulq(mulq(b, sn), sb);                // the sidebands blended
+    return o > 0x0fffffff ? 0x7fffffff : o < -0x10000000 ? (i32)0x80000000 : o * 8;
+}
+
+// A chunk: frames whose every read of the line is older than the chunk (the delay longer than the chunk), so each
+// stage runs over the whole chunk with its state in registers, one stage after another; the same arithmetic in the
+// same order for each filter as frame by frame, so the same sound to the bit. The loop's feedback goes into the line
+// last, frame by frame, from the wet of the frame before.
+static inline void ap_pass(Allpass& s, i32 c, const i32* in, i32* out, u32 k, u32 p0) {
+    i32 x2 = s.x[p0], x1 = s.x[p0 ^ 1u], y2 = s.y[p0], y1 = s.y[p0 ^ 1u];
+    for (u32 j = 0; j < k; ++j) {
+        const i32 x = in[j];
+        const i32 y = mulq(c, x + y2) - x2;
+        out[j] = y;
+        x2 = x1; x1 = x; y2 = y1; y1 = y;
+    }
+    const u32 pk = (p0 + k) & 1u;
+    s.x[pk] = x2; s.x[pk ^ 1u] = x1; s.y[pk] = y2; s.y[pk ^ 1u] = y1;
+}
+
+template <int LEN> static inline void smear_pass(i32* buf, u32& spos, i32* io, u32 k, i32 g16) {
+    u32 at = spos;
+    for (u32 j = 0; j < k; ++j) io[j] = smear_stage<LEN>(buf, at, io[j], g16);
+    spos = at;
+}
+
+template <int C> static void chunk_side(State& st, Channel& ch, u32* spos, u32 k, u32 wpos, u32 filled, i32 g, i32 tone, i32 sb) {
+    const i16* line = st.line[C];
+    i32* const ta = st.ta;
+    i32* const tb = st.tb;
+    for (u32 j = 0; j < k; ++j) {
+        const u32 d = st.dqs[j], whole = d >> 8, frac = d & 255u;
+        const u32 fl = filled + j < (u32)LINE ? filled + j : (u32)LINE;
+        i32 y = 0;
+        if (whole + 1u <= fl) {                                        // older than a fresh start is silence
+            int w = (int)wpos + (int)j; if (w >= LINE) w -= LINE;
+            int r0 = w - (int)whole; if (r0 < 0) r0 += LINE;
+            const int r1 = r0 == 0 ? LINE - 1 : r0 - 1;
+            const i32 a0 = line[r0], a1 = line[r1];
+            y = (a0 * 256 + (a1 - a0) * (i32)frac) * 256;
+        }
+        ta[j] = y;
+    }
+    if (g) {
+        smear_pass<SMEAR_LEN_C(C, 2)>(st.smear[C][2], spos[2], ta, k, g);
+        smear_pass<SMEAR_LEN_C(C, 3)>(st.smear[C][3], spos[3], ta, k, g);
+    }
+    i32 lp = ch.lp, hp = ch.hp;
+    for (u32 j = 0; j < k; ++j) {
+        lp = addq(lp, mulq(subq(ta[j], lp), tone));
+        hp = addq(hp, mulq(subq(lp, hp), 12240000));
+        ta[j] = subq(lp, hp) >> 3;                                     // Q28 into the shifter
+    }
+    ch.lp = lp; ch.hp = hp;
+    const u32 p0 = wpos & 1u;
+    ap_pass(ch.b[0], HILBERT_B[0], ta, tb, k, p0);
+    for (int j = 1; j < STAGES; ++j) ap_pass(ch.b[j], HILBERT_B[j], tb, tb, k, p0);
+    for (int j = 0; j < STAGES; ++j) ap_pass(ch.a[j], HILBERT_A[j], ta, ta, k, p0);
+    i32 re = ch.a_late;
+    i32* const wet = st.wet[C];
+    for (u32 j = 0; j < k; ++j) {
+        const i32 o = mulq(re, st.csb[j]) + mulq(mulq(tb[j], st.snb[j]), sb);   // the sidebands blended
+        re = ta[j];
+        wet[j] = o > 0x0fffffff ? 0x7fffffff : o < -0x10000000 ? (i32)0x80000000 : o * 8;
+    }
+    ch.a_late = re;
+}
+
 extern "C" void veffbode_process(const Op1fEffectBlock* now) OP1F_NAMED("veffbode_process");
 extern "C" void veffbode_process(const Op1fEffectBlock* now) {
     if (now->bytes < (u32)BLOCK_LEVEL_8 || now->state == 0) return;
@@ -152,7 +258,7 @@ extern "C" void veffbode_process(const Op1fEffectBlock* now) {
     if (now->fresh) clear_small(st);
     const int* v = now->values;
     const volatile int* e = extras_of(now->place);
-    const int delay_step = e ? e[E_DELAY] : EXTRA_START[E_DELAY], side = e ? e[E_SIDEBAND] : EXTRA_START[E_SIDEBAND];
+    const int delay_step = e ? e[E_DELAY] : EXTRA_START[E_DELAY], sidev = e ? e[E_SIDEBAND] : EXTRA_START[E_SIDEBAND];
     const int tone_pct = e ? e[E_TONE] : EXTRA_START[E_TONE], smear_pct = e ? e[E_SMEAR] : EXTRA_START[E_SMEAR];
     const int cross = e ? e[E_CROSS] & 1 : 0;
     int below;
@@ -160,65 +266,100 @@ extern "C" void veffbode_process(const Op1fEffectBlock* now) {
     const u32 turn = (u32)held(v[V_PHASE], 0, 359) * 11930465u;        // degrees to 2^32 / 360
     const i32 fb = held(v[V_FEEDBACK], 0, 90) * 21474836;              // hundredths in Q31
     const i32 want = held(v[V_MIX], 0, 100) >= 100 ? 0x7fffffff : held(v[V_MIX], 0, 100) * 21474836;
-    const i32 sb = (held(side, 0, 100) - 50) * 42949672;               // -1 .. +1: 0 down, 50 both, 100 up
+    const i32 sb = (held(sidev, 0, 100) - 50) * 42949672;              // -1 .. +1: 0 down, 50 both, 100 up
     const i32 t = held(tone_pct, 0, 100) >= 100 ? 0x7fffffff : held(tone_pct, 0, 100) * 21474836;
     const i32 tone = 0x02000000 + mulq(t, t) - mulq(0x02000000, t);   // the low-pass's step: ~100 Hz .. open
-    const i32 g = mulq(held(smear_pct, 0, 100) * 21474836, 0x5999999a); // smear: 0 .. 0.7
+    const i32 g = mulq(held(smear_pct, 0, 100) * 21474836, 0x5999999a) >> 16;   // smear: 0 .. 0.7, Q15
     const u32 target = delay_target_q8(delay_step, now->period);
     const i32 from = st.mix;
     if (!now->on || (want == 0 && from == 0)) return;                  // off, or mix 0: the sound as it came
     const i32 step = (want >> 6) - (from >> 6);
-    int* bus[CHANNELS] = { now->left, now->right };
+    int* const left = now->left;
+    int* const right = now->right;
     const u32 frames = now->frames > (u32)BLOCK ? (u32)BLOCK : now->frames;
+    Channel ch[CHANNELS] = { st.ch[0], st.ch[1] };                     // the filters, local for the block (288 bytes)
+    u32 spos[CHANNELS][SMEARS];
+    for (int c = 0; c < CHANNELS; ++c) for (int k = 0; k < SMEARS; ++k) spos[c][k] = st.spos[c][k];
+    u32 phase = st.phase, wpos = st.wpos, dq = st.delay_q8, filled = st.filled;
+    const u32 pinc = below ? (u32)0 - inc : inc;                       // below 0 the oscillator runs backward
     i32 m = from, peak = 0;
-    for (u32 n = 0; n < frames; ++n) {
-        st.delay_q8 += (u32)(((i32)target - (i32)st.delay_q8) >> 9);  // the delay glides to its target, as a tape's would
-        const u32 d = st.delay_q8, whole = d >> 8, frac = d & 255u;
-        const u32 ph = st.phase + turn;
-        const i32 cs = sine(ph + 0x40000000u), sn = sine(ph);
-        m += step;
-        i32 wet[CHANNELS];
-        for (int c = 0; c < CHANNELS; ++c) {
-            Channel* ch = &st.ch[c];
-            const i32 dry = bus[c][n];
-            const i32 x = addq(dry, mulq(fb, soft(st.ch[cross ? 1 - c : c].last)));
-            st.line[c][st.wpos] = (i16)(x >> 16);
-            i32 y = 0;
-            if (whole + 1u <= st.filled) {                             // older than a fresh start is silence
-                int r0 = (int)st.wpos - (int)whole; if (r0 < 0) r0 += LINE;
-                int r1 = r0 - 1; if (r1 < 0) r1 += LINE;
-                const i32 a0 = st.line[c][r0], a1 = st.line[c][r1];
-                y = (a0 * 256 + (a1 - a0) * (i32)frac) * 256;          // in 256ths of a sample first: no overflow
-            } else if (whole == 0u) y = (i32)st.line[c][st.wpos] * 65536;
-            for (int k = 0; k < SMEARS; ++k) {                         // smear: four all-pass delays
-                i32* buf = st.smear[c][k];
-                const u32 at = st.spos[c][k];
-                const i32 vv = buf[at];
-                const i32 w = addq(y, mulq(g, vv));
-                buf[at] = w;
-                y = subq(vv, mulq(g, w));
-                st.spos[c][k] = at + 1 >= (u32)SMEAR_LEN[c][k] ? 0 : at + 1;
-            }
-            ch->lp = addq(ch->lp, mulq(subq(y, ch->lp), tone));
-            ch->hp = addq(ch->hp, mulq(subq(ch->lp, ch->hp), 12240000));
-            const i32 fx = subq(ch->lp, ch->hp) >> 3;                  // Q28 into the shifter
-            i32 a = fx, b = fx;
-            for (int j = 0; j < STAGES; ++j) a = allpass(&ch->a[j], HILBERT_A[j], a);
-            for (int j = 0; j < STAGES; ++j) b = allpass(&ch->b[j], HILBERT_B[j], b);
-            const i32 re = ch->a_late;
-            ch->a_late = a;
-            i32 o = mulq(re, cs) + mulq(mulq(b, sn), sb);              // the sidebands blended
-            o = o > 0x0fffffff ? 0x7fffffff : o < -0x10000000 ? (i32)0x80000000 : o * 8;
-            wet[c] = o;
-            const i32 mag = o < 0 ? (o == (i32)0x80000000 ? 0x7fffffff : -o) : o;
-            if (mag > peak) peak = mag;
-            bus[c][n] = addq(mulq(0x7fffffff - m, dry), mulq(m, o));
+#define VEFFBODE_FRAME(PAR) do { \
+        dq += (u32)(((i32)target - (i32)dq) >> 9); \
+        const u32 whole = dq >> 8, frac = dq & 255u; \
+        const u32 ph = phase + turn, i = ph >> 22; \
+        const i32 f = (i32)((ph >> 6) & 0xffffu) << 15; \
+        const i32 s0 = SINE[i], s1 = SINE[i + 1], c0 = SINE[(i + 256u) & 1023u], c1 = SINE[((i + 256u) & 1023u) + 1]; \
+        const i32 sn = s0 + mulq((s1 >> 1) - (s0 >> 1), f) * 2, cs = c0 + mulq((c1 >> 1) - (c0 >> 1), f) * 2; \
+        m += step; \
+        const i32 dl = left[n], dr = right[n]; \
+        const i32 xl = addq(dl, mulq(fb, soft(ch[cross].last))); \
+        const i32 xr = addq(dr, mulq(fb, soft(ch[1 - cross].last))); \
+        const i32 wl = side<PAR, 0>(ch[0], st.line[0], st.smear[0], spos[0], xl, wpos, whole, frac, filled, g, tone, cs, sn, sb); \
+        const i32 wr = side<PAR, 1>(ch[1], st.line[1], st.smear[1], spos[1], xr, wpos, whole, frac, filled, g, tone, cs, sn, sb); \
+        ch[0].last = wl; ch[1].last = wr; \
+        const i32 keep = 0x7fffffff - m; \
+        left[n] = addq(mulq(keep, dl), mulq(m, wl)); \
+        right[n] = addq(mulq(keep, dr), mulq(m, wr)); \
+        const i32 ml = wl < 0 ? (wl == (i32)0x80000000 ? 0x7fffffff : -wl) : wl; \
+        const i32 mr = wr < 0 ? (wr == (i32)0x80000000 ? 0x7fffffff : -wr) : wr; \
+        if (ml > peak) peak = ml; \
+        if (mr > peak) peak = mr; \
+        phase += pinc; \
+        if (++wpos >= (u32)LINE) wpos = 0; \
+        if (filled < (u32)LINE) ++filled; \
+} while (0)
+    u32 n = 0;
+    while (n < frames) {
+        u32 k = 0, d = dq;                                             // the chunk: as long as every read is older
+        while (k < frames - n) {
+            const u32 nd = d + (u32)(((i32)target - (i32)d) >> 9);
+            if ((nd >> 8) < k + 1u) break;
+            st.dqs[k] = nd; d = nd; ++k;
         }
-        st.ch[0].last = wet[0]; st.ch[1].last = wet[1];
-        st.phase += below ? (u32)0 - inc : inc;                        // below 0 the oscillator runs backward
-        if (++st.wpos >= (u32)LINE) st.wpos = 0;
-        if (st.filled < (u32)LINE) ++st.filled;
+        if (k < 2u) {                                                  // a delay shorter than two frames: frame by frame
+            if (wpos & 1u) VEFFBODE_FRAME(1u); else VEFFBODE_FRAME(0u);
+            ++n;
+            continue;
+        }
+        for (u32 j = 0; j < k; ++j) {                                  // the carrier of each frame
+            const u32 ph = phase + j * pinc + turn, i = ph >> 22;
+            const i32 f = (i32)((ph >> 6) & 0xffffu) << 15;
+            const i32 s0 = SINE[i], s1 = SINE[i + 1], c0 = SINE[(i + 256u) & 1023u], c1 = SINE[((i + 256u) & 1023u) + 1];
+            st.snb[j] = s0 + mulq((s1 >> 1) - (s0 >> 1), f) * 2;
+            st.csb[j] = c0 + mulq((c1 >> 1) - (c0 >> 1), f) * 2;
+        }
+        chunk_side<0>(st, ch[0], spos[0], k, wpos, filled, g, tone, sb);
+        chunk_side<1>(st, ch[1], spos[1], k, wpos, filled, g, tone, sb);
+        const i32* const wa = st.wet[cross];                           // the feedback's source for the left, crossed or not
+        const i32* const wb = st.wet[1 - cross];
+        i32 pa = ch[cross].last, pb = ch[1 - cross].last;
+        u32 w = wpos;
+        for (u32 j = 0; j < k; ++j, ++n) {
+            m += step;
+            const i32 dl = left[n], dr = right[n];
+            st.line[0][w] = (i16)(addq(dl, mulq(fb, soft(pa))) >> 16);
+            st.line[1][w] = (i16)(addq(dr, mulq(fb, soft(pb))) >> 16);
+            pa = wa[j]; pb = wb[j];
+            if (++w >= (u32)LINE) w = 0;
+            const i32 wl = st.wet[0][j], wr = st.wet[1][j];
+            const i32 keep = 0x7fffffff - m;
+            left[n] = addq(mulq(keep, dl), mulq(m, wl));
+            right[n] = addq(mulq(keep, dr), mulq(m, wr));
+            const i32 ml = wl < 0 ? (wl == (i32)0x80000000 ? 0x7fffffff : -wl) : wl;
+            const i32 mr = wr < 0 ? (wr == (i32)0x80000000 ? 0x7fffffff : -wr) : wr;
+            if (ml > peak) peak = ml;
+            if (mr > peak) peak = mr;
+        }
+        ch[0].last = st.wet[0][k - 1]; ch[1].last = st.wet[1][k - 1];
+        wpos = w;
+        phase += k * pinc;
+        dq = st.dqs[k - 1];
+        filled = filled + k < (u32)LINE ? filled + k : (u32)LINE;
     }
+#undef VEFFBODE_FRAME
+    st.ch[0] = ch[0]; st.ch[1] = ch[1];
+    for (int c = 0; c < CHANNELS; ++c) for (int k = 0; k < SMEARS; ++k) st.spos[c][k] = spos[c][k];
+    st.phase = phase; st.wpos = wpos; st.delay_q8 = dq; st.filled = filled;
     st.mix = want;
     level = (u32)peak;
 }

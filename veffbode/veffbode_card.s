@@ -24,7 +24,7 @@ op1f_card_veffbode_level:
 .global op1f_card_veffbode
 .type op1f_card_veffbode, STT_OBJECT
 op1f_card_veffbode:
-    .long 0x44524143, 64, 10, 1
+    .long 0x44524143, 64, 10, 5
     .ascii "veffbode"
     .fill 8, 1, 0
     .long veffbode_frame
@@ -52,8 +52,8 @@ op1f_card_veffbode_ask_0:
     .long veffbode_shown
     .ascii "delay"
     .fill 11, 1, 0
-    .long 60000
-    .long 499808
+    .long 84000
+    .long 501600
     .long 32
     .long veffbode_process
     .long veffbode_reset

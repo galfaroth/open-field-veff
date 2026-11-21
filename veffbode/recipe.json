@@ -1,7 +1,7 @@
 {
   "about": "veffbode: a Bode frequency shifter inside a delay's feedback loop, in the unit's own lists of effects (sounds and master) and on fx train's wagons. Knobs: shift (fine near 0, up to 2 kHz), phase, feedback, mix; with shift held: delay (2/1..1/64 of the tempo, then 0..1000 ms), sideband, tone, smear, and cross. Starts as a jet flanger. Stands on delay; changes no place of the firmware; needs the base.",
   "name": "veffbode",
-  "version": 1,
+  "version": 5,
   "interface": 1,
   "build": "veff_veffbode",
   "sources": [
@@ -32,8 +32,8 @@
         "rides": "delay",
         "mono": false,
         "tails": false,
-        "cycles": 60000,
-        "state_bytes": 499808,
+        "cycles": 84000,
+        "state_bytes": 501600,
         "state_align": 32,
         "process": "veffbode_process",
         "reset": "veffbode_reset",

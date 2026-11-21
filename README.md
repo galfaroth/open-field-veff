@@ -7,7 +7,7 @@ Not affiliated with Teenage Engineering.
 
 | Pack | What it is | File |
 | --- | --- | --- |
-| veffbode | A Bode frequency shifter inside a delay's feedback loop. Knobs: shift, phase, feedback, mix; with shift held: delay (note or ms), sideband, tone, smear, cross. Starts as a jet flanger. Stands on `delay`. | [`veffbode.pack`](veffbode.pack) |
+| veffbode | A Bode frequency shifter inside a delay's feedback loop. Knobs: shift, phase, feedback, mix; with shift held: delay (note or ms), sideband, tone, smear, cross. Starts as a jet flanger. Stands on `delay`; about 62,000-66,000 cycles a block on average, measured on a unit. | [`veffbode.pack`](veffbode.pack) |
 
 More Veff effects (veffrosion, veffsaturator, veffshaper, veffgrrr) are on the way.
 
