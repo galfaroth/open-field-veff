@@ -18,6 +18,30 @@ Cycles are per block (64 frames, stereo), measured on a unit. The effect limit i
 | veffturator | A saturator, 2x oversampled. Knobs: drive, type (analog, sine, medium, hard, fold, digital), output, mix. With shift held: color, freq, clip, dc. | `punch` | ~54,000 average | [`veffturator.pack`](veffturator.pack) |
 | veffrrrr | A two-stage distortion in serial routing. Knobs: drive, s1, s2, mix. With shift held: four sub-pages (s1, s2, fb, out); shift and a press of the 1st knob steps between them. Mix starts at 15%. | `nitro` | being measured | [`veffrrrr.pack`](veffrrrr.pack) |
 
+## Pages
+
+Rendered on a computer from each pack's own drawing code, at typical settings, scaled 2x.
+
+**veffbode**
+
+![veffbode](pictures/veffbode.png)
+
+**veffrosion**
+
+![veffrosion](pictures/veffrosion.png)
+
+**veffshaper**
+
+![veffshaper](pictures/veffshaper.png)
+
+**veffturator**
+
+![veffturator](pictures/veffturator.png)
+
+**veffrrrr**
+
+![veffrrrr](pictures/veffrrrr.png)
+
 ## Install
 
 Pick a pack on the open-field install page, or copy its `.pack` into the unit's `packs` folder beside `base.pack`.
