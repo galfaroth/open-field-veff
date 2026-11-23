@@ -1,43 +1,43 @@
 {
-  "about": "veffturator: a saturator after Ableton's Saturator, in the unit's own lists of effects (sounds and master) and on fx train's wagons. Knobs: drive (-36..+36 dB), type (analog, sine, medium, hard, fold, digital), output (-36..0 dB), mix; with shift held: color (a peak before the shaper, -100..+100, on/off), freq (100 Hz..10 kHz), clip (soft clip on the output) and dc (the DC filter). 2x oversampled. Stands on punch; changes no place of the firmware; needs the base.",
-  "name": "veffturator",
+  "about": "veffurator: a saturator after Ableton's Saturator, in the unit's own lists of effects (sounds and master) and on fx train's wagons. Knobs: drive (-36..+36 dB), type (analog, sine, medium, hard, fold, digital), output (-36..0 dB), mix; with shift held: color (a peak before the shaper, -100..+100, on/off), freq (100 Hz..10 kHz), clip (soft clip on the output) and dc (the DC filter). 2x oversampled. Stands on punch; changes no place of the firmware; needs the base.",
+  "name": "veffurator",
   "version": 8,
   "interface": 1,
-  "build": "veff_veffturator",
+  "build": "veff_veffurator",
   "sources": [
-    "veff/veffturator/veffturator.cpp",
-    "veff/veffturator/veffturator_card.s",
-    "veff/veffturator/veffturator_pictures.s"
+    "veff/veffurator/veffurator.cpp",
+    "veff/veffurator/veffurator_card.s",
+    "veff/veffurator/veffurator_pictures.s"
   ],
   "works_with": [],
   "serves": [],
   "exports": [],
   "pictures": [
     {
-      "name": "veffturatorpage.svg",
-      "file": "veff/veffturator/veffturator.svg.make"
+      "name": "veffuratorpage.svg",
+      "file": "veff/veffurator/veffurator.svg.make"
     }
   ],
   "card": {
     "level": 10,
-    "frame": "veffturator_frame",
+    "frame": "veffurator_frame",
     "pick": null,
     "pictures": true,
-    "input": "veffturator_input",
+    "input": "veffurator_input",
     "folders": [],
     "asks": [
       {
         "kind": "effect",
-        "name": "veffturator",
+        "name": "veffurator",
         "rides": "punch",
         "mono": false,
         "tails": false,
         "cycles": 82000,
         "state_bytes": 2400,
         "state_align": 32,
-        "process": "veffturator_process",
-        "reset": "veffturator_reset",
-        "shown": "veffturator_shown",
+        "process": "veffurator_process",
+        "reset": "veffurator_reset",
+        "shown": "veffurator_shown",
         "params": [
           {
             "name": "drive",
@@ -67,11 +67,11 @@
       },
       {
         "kind": "keeps",
-        "name": "veffturator",
-        "changed": "veffturator_changed",
+        "name": "veffurator",
+        "changed": "veffurator_changed",
         "keys": [
           {
-            "name": "veffturator_set",
+            "name": "veffurator_set",
             "files": [
               "synth",
               "drum",

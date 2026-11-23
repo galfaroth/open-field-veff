@@ -1,4 +1,4 @@
-"""Writes veffturator_tables.h: run `python3.12 -I veff/veffturator/make_tables.py` from the checkout.
+"""Writes veffurator_tables.h: run `python3.12 -I veff/veffurator/make_tables.py` from the checkout.
 
 The six shaper curves (1025 points each over |u| = 0 .. 8, odd, Q31, slope 1 at 0), the drive and output gains,
 the colour filter's coefficients (a TPT state-variable band-pass, k = 1, 100 Hz .. 10 kHz in 61 steps) and the
@@ -53,7 +53,7 @@ def halfband(P=5, beta=6.0):
 def main():
     out = []
     w = out.append
-    w("// Made by veff/veffturator/make_tables.py: do not edit by hand.")
+    w("// Made by veff/veffurator/make_tables.py: do not edit by hand.")
     w("enum { CURVES = %d, CURVE_POINTS = %d, DRIVE_STEPS = 73, OUT_STEPS = 37, FREQ_STEPS = 61, HB_TAPS = 5 };" % (len(CURVES), POINTS))
     w("static const int CURVE[%d][%d] = {" % (len(CURVES), POINTS))
     for kind in CURVES:
@@ -80,7 +80,7 @@ def main():
     w("// the half-band's side taps h[0], h[2], .. h[8] (Q31); the centre is 0.5")
     w("static const int HB[5] = { " + ", ".join(str(q31(v)) for v in hb) + " };")
     here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, "veffturator_tables.h"), "w") as fh:
+    with open(os.path.join(here, "veffurator_tables.h"), "w") as fh:
         fh.write("\n".join(out) + "\n")
 
 

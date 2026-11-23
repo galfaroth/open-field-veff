@@ -1,4 +1,4 @@
-// Made by veff/veffturator/make_tables.py: do not edit by hand.
+// Made by veff/veffurator/make_tables.py: do not edit by hand.
 enum { CURVES = 6, CURVE_POINTS = 1025, DRIVE_STEPS = 73, OUT_STEPS = 37, FREQ_STEPS = 61, HB_TAPS = 5 };
 static const int CURVE[6][1025] = {
   { // analog

@@ -1,13 +1,13 @@
-// veffturator: a saturator after Ableton's Saturator (our own implementation), as an effect of the unit's own lists
+// veffurator: a saturator after Ableton's Saturator (our own implementation), as an effect of the unit's own lists
 // (level 8 of open-field's base, with level 7 for the values past the four knobs and level 10 for the page). It changes
 // no place of the firmware and names no address of it.
 //
 // What the owner meets:
-//   `veffturator` in the unit's lists of effects (shift and T3 on a sound, the master's list on the mixer), and on
+//   `veffurator` in the unit's lists of effects (shift and T3 on a sound, the master's list on the mixer), and on
 //   every wagon of fx train. It stands on the unit's `punch`: a sound saved with it keeps punch, switched off, elsewhere.
 //   The four knobs (and the LFOs): DRIVE (-36 .. +36 dB), TYPE (analog, sine, medium, hard, fold, digital),
 //   OUTPUT (-36 .. 0 dB), MIX (0 .. 100). A press of the 1st knob puts the drive to 0 dB, of the 3rd the output.
-//   With shift held, the knobs turn the values kept with the sound (level 7, `veffturator_set`):
+//   With shift held, the knobs turn the values kept with the sound (level 7, `veffurator_set`):
 //   COLOR (amount -100 .. +100 of a peak before the shaper, -12 .. +12 dB; turning it switches it on; shift and a press
 //   of the 1st knob switches it off and on), FREQ (the colour's 100 Hz .. 10 kHz), CLIP (a soft clip on the output:
 //   right on, left off; shift and a press toggles), DC (the DC filter: the same).
@@ -18,7 +18,7 @@
 
 #include "build_r6e_card.h"
 #include "veff_ui.h"
-#include "veffturator_tables.h"
+#include "veffurator_tables.h"
 
 typedef unsigned int u32;
 typedef int i32;
@@ -32,11 +32,11 @@ enum { PLACES = 17 };                                                  // the so
 static const int EXTRA_START[EXTRAS] = { 30, 30, 0, 1, 0 };            // colour +30 at 1 kHz (off), no clip, dc on
 static const int EXTRA_LEAST[EXTRAS] = { -100, 0, 0, 0, 0 };
 static const int EXTRA_MOST[EXTRAS] = { 100, FREQ_STEPS - 1, 1, 1, 1 };
-static const char KEY[] = "veffturator_set";
-static const char LOG_FILE[] = "op1f/veffturator.cpp";
+static const char KEY[] = "veffurator_set";
+static const char LOG_FILE[] = "op1f/veffurator.cpp";
 static const char* const TYPE_NAMES[CURVES] = { "analog", "sine", "medium", "hard", "fold", "digital" };
 
-extern "C" const Op1fCard op1f_card_veffturator OP1F_NAMED("op1f_card_veffturator");
+extern "C" const Op1fCard op1f_card_veffurator OP1F_NAMED("op1f_card_veffurator");
 
 #ifdef OP1F_HOST
 static inline i32 mulq(i32 a, i32 b) {
@@ -108,8 +108,8 @@ static inline i32 shape(const int* t, i32 v) {                         // v in Q
 
 static inline i32 twice(i32 x) { return addq(x, x); }
 
-extern "C" void veffturator_process(const Op1fEffectBlock* now) OP1F_NAMED("veffturator_process");
-extern "C" void veffturator_process(const Op1fEffectBlock* now) {
+extern "C" void veffurator_process(const Op1fEffectBlock* now) OP1F_NAMED("veffurator_process");
+extern "C" void veffurator_process(const Op1fEffectBlock* now) {
     if (now->bytes < (u32)BLOCK_LEVEL_8 || now->state == 0) return;
     State& st = *(State*)now->state;
     const int* v = now->values;
@@ -193,8 +193,8 @@ extern "C" void veffturator_process(const Op1fEffectBlock* now) {
     if (seen) feed_end(at, half, now->left);
 }
 
-extern "C" void veffturator_reset(unsigned place, void* state) OP1F_NAMED("veffturator_reset");
-extern "C" void veffturator_reset(unsigned place, void* state) {
+extern "C" void veffurator_reset(unsigned place, void* state) OP1F_NAMED("veffurator_reset");
+extern "C" void veffurator_reset(unsigned place, void* state) {
     (void)place;
     if (state == 0) return;
     u32* w = (u32*)state;
@@ -204,8 +204,8 @@ extern "C" void veffturator_reset(unsigned place, void* state) {
 // ---------------------------------------------------------------- told by the base (display thread): single words
 static volatile u32 reread;                                            // bit n: read place n's kept values again
 
-extern "C" void veffturator_shown(unsigned where, unsigned how) OP1F_NAMED("veffturator_shown");
-extern "C" void veffturator_shown(unsigned where, unsigned how) { shown_where = where; shown_how = how; }
+extern "C" void veffurator_shown(unsigned where, unsigned how) OP1F_NAMED("veffurator_shown");
+extern "C" void veffurator_shown(unsigned where, unsigned how) { shown_where = where; shown_how = how; }
 
 static u32 place_of(unsigned where, unsigned which) {
     if (where == (unsigned)OP1F_KEEP_SYNTH) return which & 7u;
@@ -214,8 +214,8 @@ static u32 place_of(unsigned where, unsigned which) {
     return 32u;
 }
 
-extern "C" void veffturator_changed(unsigned where, unsigned which, unsigned how) OP1F_NAMED("veffturator_changed");
-extern "C" void veffturator_changed(unsigned where, unsigned which, unsigned how) {
+extern "C" void veffurator_changed(unsigned where, unsigned which, unsigned how) OP1F_NAMED("veffurator_changed");
+extern "C" void veffurator_changed(unsigned where, unsigned which, unsigned how) {
     (void)how;
     const u32 p = place_of(where, which);
     if (p < (u32)PLACES) reread |= 1u << p;
@@ -225,8 +225,8 @@ extern "C" void veffturator_changed(unsigned where, unsigned which, unsigned how
 static volatile int pending_turn[4];                                   // shift-held turns of the four knobs, in detents
 static volatile u32 pending_click;                                     // bits 0..3: knob pressed; bits 4..7: with shift
 
-extern "C" int veffturator_input(const Op1fInput* e) OP1F_NAMED("veffturator_input");
-extern "C" int veffturator_input(const Op1fInput* e) {
+extern "C" int veffurator_input(const Op1fInput* e) OP1F_NAMED("veffurator_input");
+extern "C" int veffurator_input(const Op1fInput* e) {
     if (e->bytes < (u32)INPUT_LEVEL_2 || !e->mine) return 0;
     if (e->what == (u32)OP1F_TURN && e->key < 4 && e->shift) {         // shift held: the kept values are ours
         const int steps = e->turn >> 10;
@@ -283,7 +283,7 @@ static void extras_read(u32 p) {
     where_of(p, &where, &which);
     char text[96];
     extras_start(p);
-    if (op1f_value_get(&op1f_card_veffturator, where, which, KEY, text, sizeof text) > 0) {
+    if (op1f_value_get(&op1f_card_veffurator, where, which, KEY, text, sizeof text) > 0) {
         for (int k = 0; k < EXTRAS; ++k) { int v; if (read_member(text, NAMES[k], &v)) extra[p][k] = held(v, EXTRA_LEAST[k], EXTRA_MOST[k]); }
     }
     extra_ready |= 1u << p;
@@ -301,7 +301,7 @@ static void extras_write(u32 p) {
     q = put(q, ",\"f\":"); q = put_number(q, extra[p][E_FREQ]);
     q = put(q, ",\"s\":"); q = put_number(q, extra[p][E_SOFT]);
     put(q, ",\"v\":1}");
-    if (op1f_value_set(&op1f_card_veffturator, where, which, KEY, text) == 0) unsaved &= ~(1u << p);   // else again next frame
+    if (op1f_value_set(&op1f_card_veffurator, where, which, KEY, text) == 0) unsaved &= ~(1u << p);   // else again next frame
 }
 
 // ---- the page: the common Veff page (veff_ui.h), painted every frame on the base's blank page
@@ -330,7 +330,7 @@ static inline void marker(void* c, int x, int y, int r) { veffui::disc(c, x, y, 
 
 static void paint_page(void* canvas, u32 where, u32 how, int shift) {
     int v[4] = { 6, 1, -3, 100 };
-    for (int c = 0; c < 4; ++c) { int h = 0; if (op1f_param_heard(&op1f_card_veffturator, ASK_EFFECT, where, (unsigned)c, &h) == 0) v[c] = h; }
+    for (int c = 0; c < 4; ++c) { int h = 0; if (op1f_param_heard(&op1f_card_veffurator, ASK_EFFECT, where, (unsigned)c, &h) == 0) v[c] = h; }
     v[V_DRIVE] = held(v[V_DRIVE], -36, 36); v[V_TYPE] = held(v[V_TYPE], 0, CURVES - 1);
     v[V_OUTPUT] = held(v[V_OUTPUT], -36, 0); v[V_MIX] = held(v[V_MIX], 0, 100);
     int x[EXTRAS];
@@ -427,20 +427,20 @@ static void paint_page(void* canvas, u32 where, u32 how, int shift) {
 
 static u32 asked;
 
-extern "C" void veffturator_frame(const Op1fFrame* now) OP1F_NAMED("veffturator_frame");
-extern "C" void veffturator_frame(const Op1fFrame* now) {
+extern "C" void veffurator_frame(const Op1fFrame* now) OP1F_NAMED("veffurator_frame");
+extern "C" void veffurator_frame(const Op1fFrame* now) {
     if (now->bytes < (u32)FRAME_LEVEL_4) return;
     {   // our own black page stands in for the effect page, so the base prints no name over it
         static void* page_doc; static u32 page_tried, page_stood;
-        if (!page_tried) { page_tried = 1; page_doc = op1f_picture(&op1f_card_veffturator, "veffturatorpage.svg"); }
-        if (page_doc && !page_stood) page_stood = (u32)op1f_page_stand_in(&op1f_card_veffturator, ASK_EFFECT, page_doc);
+        if (!page_tried) { page_tried = 1; page_doc = op1f_picture(&op1f_card_veffurator, "veffuratorpage.svg"); }
+        if (page_doc && !page_stood) page_stood = (u32)op1f_page_stand_in(&op1f_card_veffurator, ASK_EFFECT, page_doc);
     }
     if (!asked) {
         asked = 1;
         for (u32 p = 0; p < (u32)PLACES; ++p) extras_start(p);
-        op1f_log(3, LOG_FILE, 1, "veffturator: ready");
+        op1f_log(3, LOG_FILE, 1, "veffurator: ready");
     }
-    const u32 riding = (u32)op1f_riding(&op1f_card_veffturator, ASK_EFFECT);
+    const u32 riding = (u32)op1f_riding(&op1f_card_veffurator, ASK_EFFECT);
     u32 todo = reread | (riding & ~extra_ready & ((1u << PLACES) - 1u));
     reread = 0;
     for (u32 p = 0; p < (u32)PLACES; ++p) if (todo >> p & 1u) extras_read(p);
@@ -461,14 +461,14 @@ extern "C" void veffturator_frame(const Op1fFrame* now) {
         if (clicks & 16u) { x[E_COLOR] ^= 1; unsaved |= 1u << where; }
         if (clicks & 64u) { x[E_SOFT] ^= 1; unsaved |= 1u << where; }
         if (clicks & 128u) { x[E_DC] ^= 1; unsaved |= 1u << where; }
-        if (clicks & 1u) op1f_param_set(&op1f_card_veffturator, ASK_EFFECT, where, V_DRIVE, 0);
-        if (clicks & 4u) op1f_param_set(&op1f_card_veffturator, ASK_EFFECT, where, V_OUTPUT, 0);
+        if (clicks & 1u) op1f_param_set(&op1f_card_veffurator, ASK_EFFECT, where, V_DRIVE, 0);
+        if (clicks & 4u) op1f_param_set(&op1f_card_veffurator, ASK_EFFECT, where, V_OUTPUT, 0);
     } else {
         for (int k = 0; k < 4; ++k) pending_turn[k] = 0;
         pending_click = 0;
     }
     for (u32 p = 0; p < (u32)PLACES; ++p) if (unsaved >> p & 1u) extras_write(p);
-    if (now->page == &op1f_card_veffturator && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP)) {
+    if (now->page == &op1f_card_veffurator && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP)) {
         paint_page(now->canvas, where, how, now->shift != 0);
     }
 }
