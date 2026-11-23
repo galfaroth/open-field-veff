@@ -88,23 +88,23 @@ Rendered on a computer from each pack's own drawing code, at typical settings, s
 
 **veffbode**
 
-![veffbode](pictures/veffbode.png)
+<img src="pictures/veffbode.png" alt="veffbode" width="480">
 
 **veffrosion**
 
-![veffrosion](pictures/veffrosion.png)
+<img src="pictures/veffrosion.png" alt="veffrosion" width="480">
 
 **veffshaper**
 
-![veffshaper](pictures/veffshaper.png)
+<img src="pictures/veffshaper.png" alt="veffshaper" width="480">
 
 **veffurator**
 
-![veffurator](pictures/veffurator.png)
+<img src="pictures/veffurator.png" alt="veffurator" width="480">
 
 **veffrrrr**
 
-![veffrrrr](pictures/veffrrrr.png)
+<img src="pictures/veffrrrr.png" alt="veffrrrr" width="480">
 
 ## Thumbnails
 
