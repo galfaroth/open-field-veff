@@ -24,7 +24,7 @@ op1f_card_veffbode_level:
 .global op1f_card_veffbode
 .type op1f_card_veffbode, STT_OBJECT
 op1f_card_veffbode:
-    .long 0x44524143, 64, 10, 5
+    .long 0x44524143, 64, 10, 13
     .ascii "veffbode"
     .fill 8, 1, 0
     .long veffbode_frame

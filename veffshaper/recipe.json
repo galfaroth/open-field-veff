@@ -1,0 +1,89 @@
+{
+  "about": "veffshaper: a parametric waveshaper in the unit's own lists of effects (sounds and master) and on fx train's wagons. Knobs: drive (-12..+24 dB), curve (a saturating cubic), depth (a sine ripple along the curve, fold-like), mix; with shift held: lin, damp (flattens near zero), period (the ripple's cycles) and output (0..-24 dB). Page: the common Veff page, the input sine and the shaped wave with the pink area between them. Stands on punch; changes no place of the firmware; needs the base.",
+  "name": "veffshaper",
+  "version": 8,
+  "interface": 1,
+  "build": "veff_veffshaper",
+  "sources": [
+    "veff/veffshaper/veffshaper.cpp",
+    "veff/veffshaper/veffshaper_card.s",
+    "veff/veffshaper/veffshaper_pictures.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [
+    {
+      "name": "veffshaperpage.svg",
+      "file": "veff/veffshaper/veffshaper.svg.make"
+    }
+  ],
+  "card": {
+    "level": 10,
+    "frame": "veffshaper_frame",
+    "pick": null,
+    "pictures": true,
+    "input": "veffshaper_input",
+    "folders": [],
+    "asks": [
+      {
+        "kind": "effect",
+        "name": "veffshaper",
+        "rides": "punch",
+        "mono": false,
+        "tails": false,
+        "cycles": 48000,
+        "state_bytes": 64,
+        "state_align": 4,
+        "process": "veffshaper_process",
+        "reset": "veffshaper_reset",
+        "shown": "veffshaper_shown",
+        "params": [
+          {
+            "name": "drive",
+            "low": 0,
+            "high": 100,
+            "start": 30
+          },
+          {
+            "name": "curve",
+            "low": 0,
+            "high": 100,
+            "start": 50
+          },
+          {
+            "name": "depth",
+            "low": 0,
+            "high": 100,
+            "start": 0
+          },
+          {
+            "name": "mix",
+            "low": 0,
+            "high": 100,
+            "start": 100
+          }
+        ]
+      },
+      {
+        "kind": "keeps",
+        "name": "veffshaper",
+        "changed": "veffshaper_changed",
+        "keys": [
+          {
+            "name": "veffshaper_set",
+            "files": [
+              "synth",
+              "drum",
+              "master"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}

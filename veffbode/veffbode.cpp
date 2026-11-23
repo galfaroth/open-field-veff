@@ -18,6 +18,10 @@
 // On the audio thread: no division, no 64-bit multiply, no float; every sum and difference held at full scale.
 
 #include "build_r6e_card.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wparentheses"                       // veff_ui.h (common, unedited)
+#include "veff_ui.h"
+#pragma GCC diagnostic pop
 #include "bode_tables.h"
 
 typedef unsigned int u32;
@@ -96,6 +100,9 @@ enum { STATE_BYTES = (sizeof(State) + 31) & ~31 };
 static_assert(STATE_BYTES == 501600, "the recipe's state_bytes");
 
 static volatile u32 level;                                             // the last block's wet peak, for the page's combs
+enum { SNAPS = 64 };                                                   // the page's wave: one input sample a call
+static volatile i32 snap[SNAPS];
+static volatile u32 snap_at;
 
 static inline i32 soft(i32 x) { return subq(x, mulq(mulq(x, x), x) >> 2); }   // the feedback's knee: x - x^3/4
 
@@ -256,6 +263,7 @@ extern "C" void veffbode_process(const Op1fEffectBlock* now) {
     if (now->bytes < (u32)BLOCK_LEVEL_8 || now->state == 0) return;
     State& st = *(State*)now->state;
     if (now->fresh) clear_small(st);
+    { const u32 at = snap_at; snap[at & (SNAPS - 1)] = now->left[0]; snap_at = at + 1; }   // for the page only
     const int* v = now->values;
     const volatile int* e = extras_of(now->place);
     const int delay_step = e ? e[E_DELAY] : EXTRA_START[E_DELAY], sidev = e ? e[E_SIDEBAND] : EXTRA_START[E_SIDEBAND];
@@ -368,8 +376,11 @@ extern "C" void veffbode_reset(unsigned place, void* state) OP1F_NAMED("veffbode
 extern "C" void veffbode_reset(unsigned place, void* state) {
     (void)place;
     if (state == 0) return;
+    // everything but the two lines (~15 KB, not 500 KB): with filled 0 the lines are never read before written, so
+    // they need no clearing; clearing them all coincided with the base switching the effect off (6M cycles)
     u32* w = (u32*)state;
-    for (u32 i = 0; i < (u32)(STATE_BYTES >> 2); ++i) w[i] = 0;
+    const u32 words = (u32)((const char*)&((State*)state)->line[0][0] - (const char*)state) >> 2;
+    for (u32 i = 0; i < words; ++i) w[i] = 0;
 }
 
 // ---------------------------------------------------------------- told by the base (display thread): single words
@@ -475,76 +486,11 @@ static void extras_write(u32 p) {
     if (op1f_value_set(&op1f_card_veffbode, where, which, KEY, text) == 0) unsaved &= ~(1u << p);   // else again next frame
 }
 
-// ---- the faceplate: veffbode.svg (veff/veffbode/face.py), every letter drawn by the picture itself
-enum { WAVE_FRAMES = 12, SPHERE_FRAMES = 8, ARC_STEPS = 16, SIDE_ICONS = 3, PLACES_TEXT = 8 };
-static const char GLYPHS[] = "0123456789+-.%/mshzupdownbtx";        // as face.py's GLYPHS
-enum { GLYPH_COUNT = sizeof(GLYPHS) - 1 };
-
-static struct {
-    u32 asked, stood, wave_acc, sphere_acc, lvl, said;
-    void* doc;
-    int wave, sphere, side, arcs[4], comb_dx, comb_sy, page;
-    void* waves[WAVE_FRAMES]; void* spheres[SPHERE_FRAMES]; void* sides[SIDE_ICONS]; void* arc[4][ARC_STEPS + 1];
-    void* comb_l; void* comb_r; void* mark[2][2]; void* labels[4][2];
-    void* glyph[4][PLACES_TEXT][GLYPH_COUNT]; signed char shown_glyph[4][PLACES_TEXT];
-    char line[24];
-} f;
-
-static void show(void* n, int on) { if (n) op1f_show(n, on); }
-
-static char* name_of(char* q, const char* a, int n, const char* b, int m) {
-    char* p = put(q, a); p = put_number(p, n);
-    if (b) { p = put(p, b); put_number(p, m); }
-    return q;
-}
-
-static void make_page() {
-    void* d = op1f_picture(&op1f_card_veffbode, "veffbodepage.svg");
-    char q[24];
-    if (d) {
-        for (int i = 0; i < WAVE_FRAMES; ++i) { f.waves[i] = op1f_node(d, name_of(q, "bw_", i, 0, 0)); show(f.waves[i], 0); }
-        for (int i = 0; i < SPHERE_FRAMES; ++i) { f.spheres[i] = op1f_node(d, name_of(q, "bs_", i, 0, 0)); show(f.spheres[i], 0); }
-        for (int i = 0; i < SIDE_ICONS; ++i) { f.sides[i] = op1f_node(d, name_of(q, "bsd", i, 0, 0)); show(f.sides[i], 0); }
-        for (int c = 0; c < 4; ++c) {
-            for (int s = 1; s <= ARC_STEPS; ++s) { f.arc[c][s] = op1f_node(d, name_of(q, "ba", c, "_", s)); show(f.arc[c][s], 0); }
-            for (int pg = 0; pg < 2; ++pg) { f.labels[c][pg] = op1f_node(d, name_of(q, "bl", c, "_", pg)); show(f.labels[c][pg], 0); }
-            for (int i = 0; i < PLACES_TEXT; ++i) {
-                f.shown_glyph[c][i] = -1;
-                for (int g = 0; g < GLYPH_COUNT; ++g) {
-                    q[0] = 't'; q[1] = (char)('0' + c); q[2] = (char)('0' + i); q[3] = '_'; put_number(q + 4, g);
-                    f.glyph[c][i][g] = op1f_node(d, q); show(f.glyph[c][i][g], 0);
-                }
-            }
-        }
-        f.comb_l = op1f_node(d, "bcl"); f.comb_r = op1f_node(d, "bcr");
-        f.mark[0][0] = op1f_node(d, "bml_off"); f.mark[0][1] = op1f_node(d, "bml_on");
-        f.mark[1][0] = op1f_node(d, "bmr_off"); f.mark[1][1] = op1f_node(d, "bmr_on");
-    }
-    f.wave = f.sphere = f.side = f.page = -1;
-    f.comb_dx = f.comb_sy = -1;
-    f.doc = d;
-    op1f_log(3, LOG_FILE, 1, "veffbode: faceplate %s", d ? "made" : "NOT made: the base's page stands in");
-}
-
-static void pick(void* const* nodes, int* now, int next) {
-    if (next == *now) return;
-    if (*now >= 0) show(nodes[*now], 0);
-    if (next >= 0) show(nodes[next], 1);
-    *now = next;
-}
-
-static void write_value(int c, const char* t) {
-    for (int i = 0; i < PLACES_TEXT; ++i) {
-        int g = -1;
-        if (*t) { for (int k = 0; k < GLYPH_COUNT; ++k) if (GLYPHS[k] == *t) { g = k; break; } ++t; }
-        const int was = f.shown_glyph[c][i];
-        if (g == was) continue;
-        if (was >= 0) show(f.glyph[c][i][was], 0);
-        if (g >= 0) show(f.glyph[c][i][g], 1);
-        f.shown_glyph[c][i] = (signed char)g;
-    }
-}
-
+// ---------------------------------------------------------------- the page: the common Veff page (veff_ui.h)
+// Painted every frame on the base's blank page. The centre picture, after the Veff reference sheet: four bell-shaped
+// sines crossing along the axis (two white, two pink), two pink circles overlapping at the middle with a filled lens,
+// a dashed centre line and sparkles. The circles part and orbit with the shift; the waves scroll with the shift and
+// the phase; their height follows the input's envelope; feedback and mix set the brightness. Integer maths only.
 static char* put_hundredths(char* p, int c) {                          // +5.25, +12.5, +120
     p = put(p, c < 0 ? "-" : "+");
     u32 n = (u32)(c < 0 ? -c : c), whole = 0;
@@ -556,88 +502,135 @@ static char* put_hundredths(char* p, int c) {                          // +5.25,
     return put_number(p, (int)n);
 }
 
-static int speed_of(int centihz) {
-    int a = centihz < 0 ? -centihz : centihz, s = 1;
-    while (a > 25 && s < 64) { a >>= 1; s += 4; }
-    return s;
+static char* put_shift(char* p, int centihz) {                         // +120 Hz, +5.25 Hz, -1.62 kHz
+    const int a = centihz < 0 ? -centihz : centihz;
+    if (a < 100000) { p = put_hundredths(p, centihz); return put(p, " Hz"); }
+    int tens = 0; u32 n = (u32)a;                                       // in tens of Hz: 1.62 kHz is 162
+    while (n >= 1000u) { n -= 1000u; ++tens; }
+    p = put_hundredths(p, centihz < 0 ? -tens : tens);
+    return put(p, " kHz");
 }
 
-static u32 wrap(u32 acc, u32 room) { while (acc >= room) acc -= room; return acc; }
+static struct { u32 asked, theta, tick; int env, lvl; char line[4][16]; } f;
 
-static void dress(u32 where, int shift) {
+enum { WAVE_LEFT = 24, WAVE_RIGHT = 456, WAVE_PTS = 32, LOBE = 40 };
+
+static void paint_art(void* c, const int* v, const int* x, int hz) {
+    using namespace veffui;
+    // the envelope: the input snapshot's peak, eased (0..256)
+    const u32 at = snap_at;
+    int pk = 0;
+    for (int i = 0; i < SNAPS; ++i) {
+        const int s = snap[(at - (u32)SNAPS + (u32)i) & (SNAPS - 1)] >> 16;
+        const int a = s < 0 ? -s : s;
+        if (a > pk) pk = a;
+    }
+    int target = (pk * 3) >> 7;
+    if (target > 256) target = 256;
+    f.env += (target - f.env) >> 2;
+    const int now = (int)(level >> 20);
+    f.lvl = now > f.lvl ? now : f.lvl - (f.lvl >> 3);
+    ++f.tick;
+    f.theta += (u32)((hz * 13) >> 9);                                  // the shift's speed, 1024ths of a turn << 8
+    const int phase = (held(v[V_PHASE], 0, 359) * 182) >> 8;           // in 256ths of a turn
+    const int scroll = (int)(f.theta >> 10) + phase;                   // in 256ths
+    const int mix = held(v[V_MIX], 0, 100), fb = held(v[V_FEEDBACK], 0, 90);
+    const int bright = 96 + ((mix * 410) >> 8);                        // 96..256
+    const int echo = 64 + ((fb * 546) >> 8);                          // 64..256: the second pair, the feedback's
+    const int sign = x[E_SIDEBAND] < 34 ? -1 : 1;
+
+    // the axis and the dashed centre
+    axis(c);
+
+    // the two circles: apart with the shift (its octaves), turning about the middle at its speed
+    int a = hz < 0 ? -hz : hz, apart = 14;
+    while (a > 25 && apart < 28) { a >>= 1; apart += 2; }
+    apart += x[E_CROSS] ? 6 : 0;
+    const int turn = (int)(f.theta >> 10);
+    const int ox = (cos256(turn) * apart) >> 14, oy = (sin256(turn) * apart) >> 16;   // flattened orbit
+    const int r = 30 + ((f.env * 10) >> 8);                             // 30..40, + the orbit's 7: within VEFF_ART_HALF
+    const int c1x = VEFF_MID_X - ox, c1y = VEFF_AXIS_Y - oy, c2x = VEFF_MID_X + ox, c2y = VEFF_AXIS_Y + oy;
+    // the lens: the rows both circles cover, pink, brighter with the wet level
+    const int lens = held(((bright * (128 + held(f.lvl * 2, 0, 128))) >> 8), 40, 230);
+    for (int y = VEFF_AXIS_Y - r; y <= VEFF_AXIS_Y + r; y += 1) {
+        const int d1 = y - c1y, d2 = y - c2y;
+        if (d1 < -r || d1 > r || d2 < -r || d2 > r) continue;
+        const int w1 = isqrt(r * r - d1 * d1), w2 = isqrt(r * r - d2 * d2);
+        const int l = (c1x - w1) > (c2x - w2) ? c1x - w1 : c2x - w2, rr = (c1x + w1) < (c2x + w2) ? c1x + w1 : c2x + w2;
+        if (rr > l) op1f_paint_box(c, l, y, rr - l + 1, 1, pink(lens));
+    }
+    // the circles
+    ring(c, c1x, c1y, r, r, pink(bright), 1, 5);
+    ring(c, c2x, c2y, r, r, pink(bright), 1, 5);
+
+    // the waves: sin(2 turns across - scroll) under a bell; white the input's pair, pink the shifted pair
+    const int amp = 26 + ((f.env * 24) >> 8);                          // 26..50: VEFF_ART_HALF at full
+    for (int wv = 0; wv < 4; ++wv) {
+        const int pinkish = wv & 1, second = wv >> 1;
+        const int off = pinkish ? 128 + sign * (scroll >> 1) : 0;      // the pink pair against the white: the shift
+        const int h = second ? amp >> 1 : amp;
+        const int alpha = (bright * (second ? echo : 256)) >> 8;
+        const unsigned col = pinkish ? pink(alpha) : white(alpha);
+        int px = 0, py = 0;
+        for (int i = 0; i <= WAVE_PTS; ++i) {
+            const int t = i << 3;                                      // 0..256 across, WAVE_PTS 32
+            const int bell = (sin256(t >> 1) * sin256(t >> 1)) >> 14;  // sin^2, Q14
+            const int s = sin256(t * 2 - scroll + off + second * 64);
+            const int qx = WAVE_LEFT + (((WAVE_RIGHT - WAVE_LEFT) * t) >> 8);
+            const int qy = VEFF_AXIS_Y - ((((s * bell) >> 14) * h) >> 14);
+            if (i) op1f_paint_line(c, px, py, qx, qy, 1, col);
+            px = qx; py = qy;
+        }
+    }
+    dashed_v(c, VEFF_MID_X, VEFF_AXIS_Y - VEFF_ART_HALF, VEFF_AXIS_Y + VEFF_ART_HALF, VEFF_WHITE, 4, 3);
+
+    sparkles(c);
+}
+
+static void paint(void* canvas, u32 where, int shift, int on) {
     int v[4];
     for (u32 i = 0; i < 4u; ++i) if (op1f_param_heard(&op1f_card_veffbode, ASK_EFFECT, where, i, &v[i]) != 0) v[i] = 0;
     int x[EXTRAS];
     for (int k = 0; k < EXTRAS; ++k) x[k] = where < (u32)PLACES ? extra[where][k] : EXTRA_START[k];
     const int hz = shift_centihz(v[V_SHIFT]);
-    const u32 sp = (u32)speed_of(hz);
-    f.wave_acc = wrap(f.wave_acc + sp, WAVE_FRAMES << 4);
-    f.sphere_acc = wrap(f.sphere_acc + sp, SPHERE_FRAMES << 5);
-    const int w = (int)(f.wave_acc >> 4), s = (int)(f.sphere_acc >> 5);
-    pick(f.waves, &f.wave, hz < 0 ? WAVE_FRAMES - 1 - w : w);
-    pick(f.spheres, &f.sphere, hz < 0 ? SPHERE_FRAMES - 1 - s : s);
-    const int side = x[E_SIDEBAND] < 34 ? 1 : x[E_SIDEBAND] > 66 ? 0 : 2;   // 0 up, 1 down, 2 both
-    const int up = hz < 0 ? side == 1 : side == 0, down = hz < 0 ? side == 0 : side == 1;
-    pick(f.sides, &f.side, up ? 0 : down ? 1 : 2);
-    for (int k = 0; k < 2; ++k) {
-        const int lit = side == 2 || (k == 0 ? down : up);
-        show(f.mark[k][0], !lit);
-        show(f.mark[k][1], lit);
+    veffui::Column col[4];
+    char (*t)[16] = f.line;
+    if (!shift) {
+        put_shift(t[0], hz);
+        put_number(t[1], held(v[V_PHASE], 0, 359));
+        put(put_number(t[2], held(v[V_FEEDBACK], 0, 90)), "%");
+        put(put_number(t[3], held(v[V_MIX], 0, 100)), "%");
+        col[0] = { "SHIFT", t[0], (held(v[V_SHIFT], -16383, 16383) + 16384) >> 5 };
+        col[1] = { "PHASE", t[1], (held(v[V_PHASE], 0, 359) * 2921) >> 10 };
+        col[2] = { "FEEDBACK", t[2], (held(v[V_FEEDBACK], 0, 90) * 11651) >> 10 };
+        col[3] = { "MIX", t[3], (held(v[V_MIX], 0, 100) * 10486) >> 10 };
+    } else {
+        const int st = held(x[E_DELAY], 0, DELAY_STEPS - 1);
+        if (st < NOTES) put(t[0], NOTE_NAMES[st]); else put(put_number(t[0], step_ms(st - NOTES)), " ms");
+        put(t[1], x[E_SIDEBAND] < 34 ? "down" : x[E_SIDEBAND] > 66 ? "up" : "both");
+        put(put_number(t[2], x[E_TONE]), "%");
+        put(put_number(t[3], x[E_SMEAR]), x[E_CROSS] ? "% x" : "%");
+        col[0] = { "DELAY", t[0], (st * 11398) >> 10 };
+        col[1] = { "SIDEBAND", t[1], (x[E_SIDEBAND] * 10486) >> 10 };
+        col[2] = { "TONE", t[2], (x[E_TONE] * 10486) >> 10 };
+        col[3] = { x[E_CROSS] ? "SMEAR CROSS" : "SMEAR", t[3], (x[E_SMEAR] * 10486) >> 10 };
     }
-    int a = hz < 0 ? -hz : hz, dx = 0;
-    while (a > 12 && dx < 44) { a >>= 1; dx += 4; }
-    const u32 now = level >> 20;
-    f.lvl = now > f.lvl ? now : f.lvl - (f.lvl >> 3);
-    int sy = 300 + (int)f.lvl * 3;
-    if (sy > 1400) sy = 1400;
-    sy &= ~31;
-    if (dx != f.comb_dx || sy != f.comb_sy) {
-        const int ty = 122 * (1024 - sy);
-        const int ml[9] = { 1024, 0, 0, 0, sy, 0, -1024 * dx, ty, 1024 }, mr[9] = { 1024, 0, 0, 0, sy, 0, 1024 * dx, ty, 1024 };
-        if (f.comb_l) op1f_move(f.comb_l, ml);
-        if (f.comb_r) op1f_move(f.comb_r, mr);
-        f.comb_dx = dx; f.comb_sy = sy;
-    }
-    const int pg = shift ? 1 : 0;
-    if (pg != f.page) { for (int c = 0; c < 4; ++c) { show(f.labels[c][1 - pg], 0); show(f.labels[c][pg], 1); } f.page = pg; }
-    for (int c = 0; c < 4; ++c) {
-        char* q = f.line;
-        int arc;
-        if (pg == 0) {
-            if (c == 0) { q = put_hundredths(q, hz); put(q, "hz"); arc = (held(v[0], -16383, 16383) + 16384) >> 11; }
-            else if (c == 1) { put_number(q, held(v[1], 0, 359)); arc = (held(v[1], 0, 359) * 46) >> 10; }
-            else { const int pc = held(v[c], 0, c == 2 ? 90 : 100); q = put_number(q, pc); put(q, "%"); arc = (pc * (c == 2 ? 182 : 164)) >> 10; }
-        } else if (c == 0) {
-            const int st = x[E_DELAY];
-            if (st < NOTES) put(q, NOTE_NAMES[st]); else { q = put_number(q, step_ms(st - NOTES)); put(q, "ms"); }
-            arc = (st * 176) >> 10;
-        } else if (c == 1) {
-            put(q, x[E_SIDEBAND] < 34 ? "down" : x[E_SIDEBAND] > 66 ? "up" : "both");
-            arc = (x[E_SIDEBAND] * 164) >> 10;
-        } else {
-            const int pc = x[c == 2 ? E_TONE : E_SMEAR];
-            q = put_number(q, pc); put(q, c == 3 && x[E_CROSS] ? "%x" : "%");
-            arc = (pc * 164) >> 10;
-        }
-        write_value(c, f.line);
-        arc = held(arc, 0, ARC_STEPS);
-        if (arc != f.arcs[c]) {
-            if (f.arcs[c] > 0) show(f.arc[c][f.arcs[c]], 0);
-            if (arc > 0) show(f.arc[c][arc], 1);
-            f.arcs[c] = arc;
-        }
-    }
+    paint_art(canvas, v, x, hz);
+    veffui::page(canvas, "BODE", veffui::ICON_BODE, col, shift ? "SHIFT" : 0, on);
 }
 
 extern "C" void veffbode_frame(const Op1fFrame* now) OP1F_NAMED("veffbode_frame");
 extern "C" void veffbode_frame(const Op1fFrame* now) {
     if (now->bytes < (u32)FRAME_LEVEL_4) return;
+    {   // our own black page stands in for the effect page, so the base prints no name over it
+        static void* page_doc; static u32 page_tried, page_stood;
+        if (!page_tried) { page_tried = 1; page_doc = op1f_picture(&op1f_card_veffbode, "veffbodepage.svg"); }
+        if (page_doc && !page_stood) page_stood = (u32)op1f_page_stand_in(&op1f_card_veffbode, ASK_EFFECT, page_doc);
+    }
     if (!f.asked) {
         f.asked = 1;
         for (u32 p = 0; p < (u32)PLACES; ++p) extras_start(p);
-        make_page();
     }
-    if (f.doc && !f.stood) f.stood = (u32)op1f_page_stand_in(&op1f_card_veffbode, ASK_EFFECT, f.doc);
     // the kept values: read again where the base said they changed, or the first time a place rides us
     const u32 riding = (u32)op1f_riding(&op1f_card_veffbode, ASK_EFFECT);
     u32 todo = reread | (riding & ~extra_ready & ((1u << PLACES) - 1u));
@@ -665,5 +658,6 @@ extern "C" void veffbode_frame(const Op1fFrame* now) {
         pending_click = 0;
     }
     for (u32 p = 0; p < (u32)PLACES; ++p) if (unsaved >> p & 1u) extras_write(p);
-    if (f.doc && now->page == &op1f_card_veffbode && (how & (u32)OP1F_SHOWN_UP)) dress(where, now->shift != 0);
+    if (now->page == &op1f_card_veffbode && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP))
+        paint(now->canvas, where, now->shift != 0, !(how & (u32)OP1F_SHOWN_OFF));
 }

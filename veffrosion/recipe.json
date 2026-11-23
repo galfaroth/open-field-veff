@@ -1,0 +1,89 @@
+{
+  "about": "veffrosion: a degrader in the spirit of Ableton's Erosion, in the unit's own lists of effects (sounds and master) and on fx train's wagons. A 0.5 ms delay whose read wobbles by a sine or band-passed noise at FREQ; the wobble's sidebands are added to the whole dry sound. Knobs: freq (30 Hz..18 kHz), width, amount, mix; with shift held: mode (sine, noise, wide) and tone. Stands on delay; changes no place of the firmware; needs the base.",
+  "name": "veffrosion",
+  "version": 8,
+  "interface": 1,
+  "build": "veff_veffrosion",
+  "sources": [
+    "veff/veffrosion/veffrosion.cpp",
+    "veff/veffrosion/veffrosion_card.s",
+    "veff/veffrosion/veffrosion_pictures.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [
+    {
+      "name": "veffrosionpage.svg",
+      "file": "veff/veffrosion/veffrosion.svg.make"
+    }
+  ],
+  "card": {
+    "level": 10,
+    "frame": "veffrosion_frame",
+    "pick": null,
+    "pictures": true,
+    "input": "veffrosion_input",
+    "folders": [],
+    "asks": [
+      {
+        "kind": "effect",
+        "name": "veffrosion",
+        "rides": "delay",
+        "mono": false,
+        "tails": false,
+        "cycles": 36000,
+        "state_bytes": 576,
+        "state_align": 32,
+        "process": "veffrosion_process",
+        "reset": "veffrosion_reset",
+        "shown": "veffrosion_shown",
+        "params": [
+          {
+            "name": "freq",
+            "low": 0,
+            "high": 127,
+            "start": 70
+          },
+          {
+            "name": "width",
+            "low": 0,
+            "high": 100,
+            "start": 30
+          },
+          {
+            "name": "amount",
+            "low": 0,
+            "high": 100,
+            "start": 40
+          },
+          {
+            "name": "mix",
+            "low": 0,
+            "high": 100,
+            "start": 50
+          }
+        ]
+      },
+      {
+        "kind": "keeps",
+        "name": "veffrosion",
+        "changed": "veffrosion_changed",
+        "keys": [
+          {
+            "name": "veffrosion_mode",
+            "files": [
+              "synth",
+              "drum",
+              "master"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}

@@ -1,0 +1,89 @@
+{
+  "about": "veffrrrr: a multi-stage distortion after Ableton Roar's serial routing (drive and tilt, two shaper+filter stages, a gated feedback delay, output, mix), in the unit's own lists of effects (sounds and master) and on fx train's wagons. Knobs: drive, s1, s2, mix; with shift held four sub-pages (s1, s2, fb, out; shift and a press of the 1st knob steps them). Text page. Stands on nitro; changes no place of the firmware; needs the base.",
+  "name": "veffrrrr",
+  "version": 6,
+  "interface": 1,
+  "build": "veff_veffrrrr",
+  "sources": [
+    "veff/veffrrrr/veffrrrr.cpp",
+    "veff/veffrrrr/veffrrrr_card.s",
+    "veff/veffrrrr/veffrrrr_pictures.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [
+    {
+      "name": "veffrrrrpage.svg",
+      "file": "veff/veffrrrr/veffrrrr.svg.make"
+    }
+  ],
+  "card": {
+    "level": 10,
+    "frame": "veffrrrr_frame",
+    "pick": null,
+    "pictures": true,
+    "input": "veffrrrr_input",
+    "folders": [],
+    "asks": [
+      {
+        "kind": "effect",
+        "name": "veffrrrr",
+        "rides": "nitro",
+        "mono": false,
+        "tails": false,
+        "cycles": 84000,
+        "state_bytes": 200544,
+        "state_align": 32,
+        "process": "veffrrrr_process",
+        "reset": "veffrrrr_reset",
+        "shown": "veffrrrr_shown",
+        "params": [
+          {
+            "name": "drive",
+            "low": 0,
+            "high": 36,
+            "start": 12
+          },
+          {
+            "name": "s1",
+            "low": 0,
+            "high": 100,
+            "start": 50
+          },
+          {
+            "name": "s2",
+            "low": 0,
+            "high": 100,
+            "start": 30
+          },
+          {
+            "name": "mix",
+            "low": 0,
+            "high": 100,
+            "start": 15
+          }
+        ]
+      },
+      {
+        "kind": "keeps",
+        "name": "veffrrrr",
+        "changed": "veffrrrr_changed",
+        "keys": [
+          {
+            "name": "veffrrrr_set",
+            "files": [
+              "synth",
+              "drum",
+              "master"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}

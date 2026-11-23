@@ -9,7 +9,7 @@
 .global op1f_art_veffbode
 .type op1f_art_veffbode, STT_OBJECT
 op1f_art_veffbode:
-    .long 0x31545241, 1, 287162, 5
+    .long 0x31545241, 1, 134, 13
     .ascii "veffbode"
     .fill 8, 1, 0
 .global op1f_art_veffbode_path
@@ -18,5 +18,5 @@ op1f_art_veffbode_path:
     .fill 48, 1, 0
     .ascii "veffbodepage.svg"
     .fill 8, 1, 0
-    .long 0, 287162, 0xb2c4f6cb    /* veff/veffbode/veffbode.svg.make */
+    .long 0, 134, 0xa7b64324    /* veff/veffbode/veffbode.svg.make */
 .size op1f_art_veffbode, .-op1f_art_veffbode
