@@ -24,7 +24,7 @@ op1f_card_veffgranular_level:
 .global op1f_card_veffgranular
 .type op1f_card_veffgranular, STT_OBJECT
 op1f_card_veffgranular:
-    .long 0x44524143, 64, 10, 2
+    .long 0x44524143, 64, 10, 3
     .ascii "veffgranular"
     .fill 4, 1, 0
     .long veffgranular_frame

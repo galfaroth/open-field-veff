@@ -30,6 +30,7 @@
 #include "granular_core.h"
 #include "sample_file.h"
 #include "sampler_region.h"
+#include "drop_logic.h"
 
 typedef unsigned int u32;
 typedef int i32;
@@ -72,7 +73,10 @@ static gran::Vis vis[VOICES];                         // the render writes, the 
 //   sampler's start and end points (today: the whole buffer past its head pad, the points are not found yet),
 //   root = the sampler's root (today: 60), rate_q16 = 65536 (44.1 kHz). sampler_refresh() fills it on the display
 //   thread.
+static volatile u32 drop_key = dropx::KEY_DEFAULT;      // the drop key's number (dropkey.txt may give another)
+static volatile u32 drop_hold;                        // a bit a slot: silenced while a drop of ours rewrites its pool
 static const GrainSource* source_for(u32 slot) {
+    if (drop_hold >> slot & 1u) return &none_src;
     if (sampler_on && sampler_src[slot].valid) return &sampler_src[slot];
     if (file_loaded && set_file[slot] == file_loaded) return &file_src;
     return &none_src;
@@ -170,6 +174,13 @@ static int list_folder() {                            // answers the names' coun
     for (int i = 0; i < n; ++i) { if (same_name(p, "sampler.off")) on = 0; while (*p) ++p; ++p; }
     if (on != sampler_on) op1f_log(3, LOG_FILE, 1, "veffgranular: the sampler source is %s (sampler.off %s)", on ? "on" : "off", on ? "absent" : "found");
     sampler_on = on;
+    {   // the drop key's number, when a file dropkey.txt gives another than the one built in (DROP.md)
+        char t[16];
+        const int got = op1f_read(CARD, FOLDER, "dropkey.txt", t, sizeof t);
+        const u32 key = got > 0 ? dropx::key_from_text(t, (u32)got) : (u32)dropx::KEY_DEFAULT;
+        if (key != drop_key) op1f_log(3, LOG_FILE, 15, "veffgranular: the drop key is taken as %u (dropkey.txt %s)", key, got > 0 ? "found" : "absent");
+        drop_key = key;
+    }
     return n;
 }
 
@@ -268,6 +279,78 @@ static void sampler_refresh(u32 slot) {
     if (was.bad || was.data != s.data || was.words != s.words || was.stereo != s.stereo)
         op1f_log(3, LOG_FILE, 6, "veffgranular: sampler source of synth %u: frames %u to %u of %u, %s", slot + 1, s.first, s.end, s.frames, s.stereo ? "stereo" : "mono");
     was = s;
+}
+
+// the slot's sample object when its table word, holder, object and pool are where the sampler source expects them; 0
+static u32 sampler_object(u32 slot) {
+    const u32 holder = rd32(SLOT_TABLE + slot * 4u);
+    if ((holder & 3u) || !in_ddr(holder, 8)) return 0;
+    const u32 object = rd32(holder);
+    if ((object & 3u) || !in_ddr(object, OBJECT_BYTES)) return 0;
+    if (rd32(object) != POOL + slot * POOL_STRIDE) return 0;
+    return object;
+}
+
+// ---------------------------------------------------------------- THE DROP EXPERIMENT (version 3; DROP.md)
+// Not for the listing. On the drop key, while the page is up, the firmware's own import of the tape clipboard into a
+// sample is called for this slot's sample object, as the sampler's worker does for a sampler sound, from the frame
+// function (the display thread). OS 1.7.3+0 only: nothing is called unless the firmware's bytes at the worker's call
+// site sum to what that firmware's do. Read in the firmware on a computer; what a unit does is not known.
+static const u32 DROP_SITE = 0x8f00b838u, DROP_SITE_BYTES = 14u, DROP_SITE_SUM = 0x64cae65eu;   // FNV-1a of the worker's two calls
+typedef int (*DropImport)(void* sample);
+#define STOCK_IMPORT ((DropImport)0x8f004204u)        // its entry: where another pack's wrapper for tracks 5 to 8 sits too
+static const u32 CLIP_BEGIN = 0x84bdd948u, CLIP_END = 0x84bdd94cu, CLIP_LENGTH = 0x84bdd9e4u, CLIP_OTHER = 0x84bdda00u;
+static const u32 WORKER_READ = 0x84bdd8a8u + 0x88u, WORKER_WRITE = 0x84bdd8a8u + 0x8cu;
+static dropx::Machine drop;                           // the display thread only
+static volatile u32 drop_request, drop_armed, drop_busy;
+static u32 drop_site_checked;
+
+static void drop_facts(dropx::Facts& f, u32 slot, u32 ours, u32 disk) {
+    f.site_ok = drop_armed; f.ours = ours; f.disk = disk;
+    f.chain_ok = 0; f.clip_length = f.clip_other = f.clip_tracks = 0; f.queue_read = 0; f.queue_write = 1;
+    if (!drop_armed) return;                          // another firmware: none of its words is read
+    f.chain_ok = slot < (u32)SLOTS && sampler_object(slot) != 0;
+    f.clip_length = rd32(CLIP_LENGTH); f.clip_other = rd32(CLIP_OTHER);
+    f.clip_tracks = (rd32(CLIP_END) - rd32(CLIP_BEGIN)) >> 2;
+    f.queue_read = rd32(WORKER_READ); f.queue_write = rd32(WORKER_WRITE);
+}
+static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
+    if (!drop_site_checked) {
+        drop_site_checked = 1;
+        u32 sum = 0x811c9dc5u;
+        for (u32 i = 0; i < DROP_SITE_BYTES; ++i) sum = (sum ^ rd8(DROP_SITE + i)) * 0x01000193u;
+        drop_armed = sum == DROP_SITE_SUM;
+        op1f_log(3, LOG_FILE, 11, "veffgranular: drop experiment: the call site sums to %08x, %s; the drop key is taken as %u",
+                 sum, drop_armed ? "as OS 1.7.3+0's: armed" : "not OS 1.7.3+0's: never called", (u32)drop_key);
+    }
+    const u32 request = drop_request;
+    if (request) drop_request = 0;
+    const u32 slot = drop.state == (u32)dropx::IDLE ? (request ? request - 1u : where) : drop.slot;
+    const u32 ours = (how & (u32)OP1F_SHOWN_UP) && slot == where && slot < (u32)SLOTS && (riding >> slot & 1u);
+    dropx::Facts f;
+    drop_facts(f, slot, ours, now->disk);
+    const u32 refused_before = drop.refused;
+    const int action = dropx::step(drop, request, f);
+    if (drop.refused != refused_before)
+        op1f_log(2, LOG_FILE, 12, "veffgranular: drop refused, reason %d (synth %u, clipboard %u frames, %u track(s), queue %u/%u); %u done, %u refused",
+                 drop.reason, slot + 1, f.clip_length, f.clip_tracks, f.queue_read, f.queue_write, drop.done, drop.refused);
+    if (action == dropx::A_HOLD) { drop_hold |= 1u << drop.slot; sampler_src[drop.slot].valid = 0; }
+    else if (action == dropx::A_RELEASE) drop_hold &= ~(1u << drop.slot);
+    else if (action == dropx::A_CALL) {
+        const u32 object = sampler_object(drop.slot);            // not 0: the checks held this frame
+        op1f_log(3, LOG_FILE, 13, "veffgranular: drop: calling the import for synth %u, object %08x, words %u before, clipboard %u frames",
+                 drop.slot + 1, object, rd32(object + OFF_WORDS), f.clip_length);
+        const u32 t0 = op1f_ms();
+        const int answer = STOCK_IMPORT((void*)object);
+        const u32 took = op1f_ms() - t0;
+        dropx::called(drop);
+        sampler_seen[drop.slot].data = 0;                         // seen anew: a new generation, a fresh overview
+        sampler_refresh(drop.slot);
+        drop_hold &= ~(1u << drop.slot);
+        op1f_log(3, LOG_FILE, 14, "veffgranular: drop: the import answered %d after %u ms; words %u, stereo %u now; %u done, %u refused",
+                 answer, took, rd32(object + OFF_WORDS), rd8(object + OFF_STEREO), drop.done, drop.refused);
+    }
+    drop_busy = drop.state != (u32)dropx::IDLE;
 }
 
 // ---------------------------------------------------------------- the overview, a little each frame
@@ -376,6 +459,11 @@ extern "C" int veffgranular_input(const Op1fInput* e) {
         return 1;
     }
     if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && e->key >= (u32)PRESS_FIRST && e->key <= (u32)PRESS_LAST) return 1;
+    if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && (e->key < 13u || e->key > 53u)) {   // the drop experiment
+        const int t = dropx::key_down(e->key, drop_key, e->what == (u32)OP1F_DOWN_SHIFT || e->shift, 1u, drop_armed, drop_busy);
+        if (t == 1) drop_request = (shown_where & 7u) + 1u;       // one word; the frame function does the rest
+        if (t) return 1;
+    }
     if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && e->key < 128u && (e->key < 13u || e->key > 53u))
         other_keys[e->key >> 5] |= 1u << (e->key & 31u);   // one word written; not taken
     return 0;
@@ -504,6 +592,16 @@ static void paint(void* c, u32 where, u32 how, int shift) {
     page(c, "GRANULAR", 99, col, shift ? (shift_page ? "SHIFT B" : "SHIFT A") : MODE_NAMES[held((int)set_mode[where & 7u], 0, gran::MODES - 1)], on);
     icon_grains(c);
     if (how & (u32)OP1F_SHOWN_OFF) text(c, VEFF_MID_X - 40, VEFF_ART_BOTTOM - 20, "SWITCHED OFF", VEFF_PINK, 2, 2);
+    if (drop.message) {                               // the drop experiment's word, over the band
+        char line[32], * q = line;
+        if (drop.message == (u32)dropx::M_DROPPING) q = put(q, "DROPPING");
+        else if (drop.message == (u32)dropx::M_DROPPED) q = put(q, "DROPPED");
+        else if (drop.message == (u32)dropx::M_NOTHING) q = put(q, "NOTHING LIFTED");
+        else { q = put(q, "DROP REFUSED "); q = put_number(q, drop.reason); }
+        const int w = text_width(line, 2, 2);
+        op1f_paint_box(c, VEFF_MID_X - (w >> 1) - 6, VEFF_ART_TOP + 12, w + 12, 16, OP1F_COLOUR(0, 0, 0));
+        text(c, VEFF_MID_X - (w >> 1), VEFF_ART_TOP + 16, line, VEFF_PINK, 2, 2);
+    }
 }
 
 // ---------------------------------------------------------------- the frame (display thread)
@@ -545,6 +643,7 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
             if (fr.round != slot) sampler_refresh(fr.round);
         }
     }
+    drop_frame(now, how, where, riding);
     // presses
     if (how & (u32)OP1F_SHOWN_UP) {
         for (int k = 0; k < 4; ++k) {                 // page B's turns: two of a hundred a notch

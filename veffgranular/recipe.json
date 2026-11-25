@@ -1,7 +1,7 @@
 {
-  "about": "veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, shape (pluck, bell, swell), tune, reverse (the chance a grain plays backward). A second shift page (shift and a press of the 1st knob): spread, volume, pitch random, level random. The sample is the synth sampler's own sample of the sound's slot (OS 1.7.3+0, read only; a file sampler.off in the folder veffgranular switches that off), else a WAV or AIFF named 1..8 in that folder (4 MiB of working memory). Four sounds of its own. Veff page. Changes no place of the firmware; needs the base.",
+  "about": "AN EXPERIMENT, NOT FOR THE LISTING (version 3): the drop key on the page calls the firmware's own import of the tape clipboard for the slot's sample, OS 1.7.3+0 only, untried on a unit (DROP.md). veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, shape (pluck, bell, swell), tune, reverse (the chance a grain plays backward). A second shift page (shift and a press of the 1st knob): spread, volume, pitch random, level random. The sample is the synth sampler's own sample of the sound's slot (OS 1.7.3+0, read only; a file sampler.off in the folder veffgranular switches that off), else a WAV or AIFF named 1..8 in that folder (4 MiB of working memory). Four sounds of its own. Veff page. Changes no place of the firmware; needs the base.",
   "name": "veffgranular",
-  "version": 2,
+  "version": 3,
   "interface": 1,
   "build": "veff_veffgranular",
   "sources": [

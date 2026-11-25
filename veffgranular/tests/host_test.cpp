@@ -10,6 +10,7 @@
 #include "../granular_core.h"
 #include "../sample_file.h"
 #include "../sampler_region.h"
+#include "../drop_logic.h"
 
 using namespace gran;
 static int failures = 0;
@@ -412,6 +413,76 @@ int main(int argc, char** argv) {
             CHECK(a.wav != c.wav, "the random values change nothing");
             CHECK(a.peak() <= 1.0 && a.peak() > 0.01, "the random values: peak %.3f", a.peak());
         }
+    }
+
+    // ---- the drop experiment's decisions (the call itself cannot be made here)
+    {
+        using namespace dropx;
+        const Facts good = { 1, 1, 0, 1, 44100, 0, 1, 5, 5 };
+        CHECK(guard(good) == OK, "the good facts are refused");
+        struct { Facts f; int want; } G[] = {
+            { { 0, 1, 0, 1, 44100, 0, 1, 5, 5 }, R_SITE },      { { 1, 0, 0, 1, 44100, 0, 1, 5, 5 }, R_NOT_OURS },
+            { { 1, 1, 1, 1, 44100, 0, 1, 5, 5 }, R_DISK },      { { 1, 1, 0, 0, 44100, 0, 1, 5, 5 }, R_CHAIN },
+            { { 1, 1, 0, 1, 0, 0, 1, 5, 5 }, R_NOTHING },       { { 1, 1, 0, 1, 0, 7, 1, 5, 5 }, OK },
+            { { 1, 1, 0, 1, 44100, 0, 0, 5, 5 }, R_TRACKS },    { { 1, 1, 0, 1, 44100, 0, 4, 5, 5 }, R_TRACKS },
+            { { 1, 1, 0, 1, 44100, 0, 1, 5, 6 }, R_WORKER },    { { 0, 0, 1, 0, 0, 0, 0, 1, 2 }, R_SITE },
+        };
+        for (auto& g : G) CHECK(guard(g.f) == g.want, "guard: %d, want %d", guard(g.f), g.want);
+
+        // the plain run: the key, a hold, FADE_FRAMES frames, one call, a release
+        { Machine m{}; int calls = 0, holds = 0;
+          int a = step(m, 3, good); holds += a == A_HOLD;
+          CHECK(a == A_HOLD && m.slot == 2 && m.state == FADING && m.message == M_DROPPING, "the key does not start a hold");
+          for (int i = 0; i < 10 && m.state == FADING; ++i) {
+              a = step(m, i == 0 ? 5u : 0u, good);               // a second key while fading is not looked at
+              if (a == A_CALL) { ++calls; CHECK(i == FADE_FRAMES - 1, "the call comes at frame %d", i); called(m); }
+              CHECK(a != A_HOLD, "a second hold");
+          }
+          CHECK(calls == 1 && m.state == IDLE && m.done == 1 && m.refused == 0 && m.slot == 2 && m.message == M_DROPPED, "the plain run: %d calls", calls);
+          for (int i = 0; i < MESSAGE_FRAMES + 2; ++i) CHECK(step(m, 0, good) == A_NONE, "an idle frame acts");
+          CHECK(m.message == M_NONE, "the message stays"); }
+        // refused at the key: nothing held, nothing called, the reason kept
+        for (auto& g : G) if (g.want) {
+            Machine m{}; const int a = step(m, 1, g.f);
+            CHECK(a == A_NONE && m.state == IDLE && m.refused == 1 && m.done == 0 && m.reason == g.want, "a refused key acts (%d)", a);
+            CHECK(m.message == (g.want == R_NOTHING ? (u32)M_NOTHING : (u32)M_REFUSED), "the wrong word for reason %d", g.want);
+        }
+        // the facts go bad during the fade: a release and no call
+        for (auto& g : G) if (g.want) {
+            Machine m{}; int calls = 0, releases = 0;
+            step(m, 8, good);
+            for (int i = 0; i < 10 && m.state == FADING; ++i) { const int a = step(m, 0, g.f); calls += a == A_CALL; releases += a == A_RELEASE; }
+            CHECK(calls == 0 && releases == 1 && m.state == IDLE && m.refused == 1 && m.reason == g.want, "bad facts during the fade: %d calls, %d releases", calls, releases);
+        }
+        // requests that name no slot
+        { Machine m{}; CHECK(step(m, 0, good) == A_NONE && step(m, 9, good) == A_NONE && step(m, 0xffffffffu, good) == A_NONE && m.state == IDLE, "a request of no slot acts"); }
+        // random frames: never a call without the checks holding that frame, never two holds without a release or a call
+        { Machine m{}; unsigned rs = 99; int held = 0; long calls = 0;
+          for (int i = 0; i < 400000; ++i) {
+              rs = rs * 1664525u + 1013904223u;
+              Facts f = good;
+              if ((rs >> 8) % 7 == 0) f.queue_write = 6; if ((rs >> 12) % 9 == 0) f.disk = 1; if ((rs >> 16) % 11 == 0) f.clip_length = 0;
+              if ((rs >> 20) % 13 == 0) f.ours = 0; if ((rs >> 24) % 17 == 0) f.chain_ok = 0; if ((rs >> 27) % 19 == 0) f.site_ok = 0;
+              const u32 request = (rs >> 4) % 5 == 0 ? (rs >> 9) % 11 : 0;
+              const int a = step(m, request, f);
+              if (a == A_HOLD) { CHECK(!held && guard(f) == OK, "a hold out of turn"); held = 1; }
+              if (a == A_RELEASE) { CHECK(held, "a release with nothing held"); held = 0; }
+              if (a == A_CALL) { CHECK(held && guard(f) == OK, "a call the checks do not allow"); called(m); held = 0; ++calls; }
+              CHECK((m.state == FADING) == (held != 0), "the hold and the state part");
+          }
+          CHECK(calls > 1000, "the random run made %ld calls", calls);
+          std::printf("drop: %ld calls and %u refusals in 400000 random frames, none without its checks\n", calls, m.refused); }
+        // the key
+        CHECK(key_down(11, 11, 0, 1, 1, 0) == 1, "the drop key is not taken");
+        CHECK(key_down(11, 11, 1, 1, 1, 0) == 0, "shift and drop is taken from stock");
+        CHECK(key_down(11, 11, 0, 0, 1, 0) == 0 && key_down(11, 11, 0, 1, 0, 0) == 0, "taken off the page or not armed");
+        CHECK(key_down(10, 11, 0, 1, 1, 0) == 0 && key_down(12, 11, 0, 1, 1, 0) == 0 && key_down(6, 11, 0, 1, 1, 0) == 0, "another key is taken");
+        CHECK(key_down(10, 11, 0, 1, 1, 1) == 2 && key_down(11, 11, 0, 1, 1, 1) == 2 && key_down(11, 11, 1, 1, 1, 1) == 2 && key_down(12, 11, 0, 1, 1, 1) == 2, "lift, drop and split pass to stock during a drop");
+        CHECK(key_down(6, 11, 0, 1, 1, 1) == 0 && key_down(60, 60, 0, 1, 1, 1) == 2 && key_down(60, 60, 0, 1, 1, 0) == 1, "the key from the file");
+        struct { const char* t; u32 want; } K[] = { { "11", 11 }, { "10\n", 10 }, { " 12 lift?", 12 }, { "", 11 }, { "x", 11 }, { "38", 11 }, { "13", 11 }, { "53", 11 },
+                                                    { "54", 54 }, { "127", 127 }, { "128", 11 }, { "99999999999", 11 }, { "0", 0 }, { "-3", 11 } };
+        for (auto& k : K) CHECK(key_from_text(k.t, (u32)std::strlen(k.t)) == k.want, "dropkey.txt '%s': %u", k.t, key_from_text(k.t, (u32)std::strlen(k.t)));
+        { const char raw[4] = { '1', '2', '7', '9' }; CHECK(key_from_text(raw, 3) == 127 && key_from_text(raw, 4) == 11 && key_from_text(raw, 0) == 11, "a text with no end"); }
     }
 
     // ---- the sampler's region, from the fields a probe pack printed on a unit

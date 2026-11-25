@@ -124,6 +124,8 @@ times feedback.
 
 ## Engine: veffgranular
 
+> **This branch (`veffgranular-drop`) holds version 3, an experiment for one unit and not for the listing.** While the engine's page is up, the drop key calls the firmware's own import of the tape clipboard for the slot's sample (OS 1.7.3+0 only, behind a sum of the firmware's bytes), so a lifted cut can be dropped without going through `sampler`. The call is made on a thread the firmware does not make it on; it has never run on a unit and may hang it. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number. Shift and drop is left to the unit. The drop key is taken to be key 11; a file `dropkey.txt` in the folder `veffgranular` with another number corrects that. Everything about it, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
+
 <img src="pictures/veffgranular.png" alt="veffgranular" width="480">
 
 A granular sample synth, in the unit's own list of **engines** (shift and T1 on a synth sound), in the spirit of Granulator III. Each key plays grains of one sample, pitched from the note against the sample's root (C4 unless the file says otherwise). Stereo out, six voices, up to four grains a voice (three with a stereo sample). Built for open-field 0.14 (base level 10).
