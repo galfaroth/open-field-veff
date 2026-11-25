@@ -1,0 +1,89 @@
+{
+  "about": "veffgraindelay: a grain delay, in the unit's own lists of effects (sounds and master) and on fx train's wagons. Grains read from a stereo delay line, each with its own place and pitch. Knobs: pitch (-24..+24 semitones, fine near 0), spray (0..500 ms), feedback (0..95), mix; with shift held: delay (2/1..1/64 of the tempo, then 0..1000 ms), freq (the grain rate, 1..150 Hz), random (random pitch), spread, and reverse. Starts as an octave-up shimmer on the eighth note. Stands on delay; changes no place of the firmware; needs the base.",
+  "name": "veffgraindelay",
+  "version": 1,
+  "interface": 1,
+  "build": "veff_veffgraindelay",
+  "sources": [
+    "veff/veffgraindelay/veffgraindelay.cpp",
+    "veff/veffgraindelay/veffgraindelay_card.s",
+    "veff/veffgraindelay/veffgraindelay_pictures.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [
+    {
+      "name": "veffgraindelaypage.svg",
+      "file": "veff/veffgraindelay/veffgraindelay.svg.make"
+    }
+  ],
+  "card": {
+    "level": 10,
+    "frame": "veffgraindelay_frame",
+    "pick": null,
+    "pictures": true,
+    "input": "veffgraindelay_input",
+    "folders": [],
+    "asks": [
+      {
+        "kind": "effect",
+        "name": "veffgraindelay",
+        "rides": "delay",
+        "mono": false,
+        "tails": false,
+        "cycles": 56000,
+        "state_bytes": 524928,
+        "state_align": 32,
+        "process": "veffgraindelay_process",
+        "reset": "veffgraindelay_reset",
+        "shown": "veffgraindelay_shown",
+        "params": [
+          {
+            "name": "pitch",
+            "low": -16383,
+            "high": 16383,
+            "start": 11585
+          },
+          {
+            "name": "spray",
+            "low": 0,
+            "high": 500,
+            "start": 15
+          },
+          {
+            "name": "feedback",
+            "low": 0,
+            "high": 95,
+            "start": 45
+          },
+          {
+            "name": "mix",
+            "low": 0,
+            "high": 100,
+            "start": 35
+          }
+        ]
+      },
+      {
+        "kind": "keeps",
+        "name": "veffgraindelay",
+        "changed": "veffgraindelay_changed",
+        "keys": [
+          {
+            "name": "veffgraindelay_grains",
+            "files": [
+              "synth",
+              "drum",
+              "master"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}
