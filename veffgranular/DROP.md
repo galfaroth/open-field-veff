@@ -147,3 +147,49 @@ shows the cut's shape. A log that ends at the line before the call means the uni
 - **The sampler does not know.** The slot's changed mark is not set, so the unit may not keep the new sample with the
   slot's state over a restart. The pool holds it until then.
 - **Another pack's wrapper at the import's entry** runs on the display thread too, which its author did not plan for.
+
+# The first run on a unit, and version 4
+
+Version 3 ran once on one unit (OS 1.7.3+0, base 37, `8 tracks` loaded), on an empty slot with one track of 255,039
+frames lifted. Key 11 is the drop key: confirmed. The log said the import answered 1 "after 0 ms" with `words` 0, and
+the page showed no sample.
+
+What that meant, read again in the firmware:
+
+- **The import is the right function and takes the one argument we gave it.** `0x8f004204(object)` asks
+  `0x8f00b78c()` (1 when the clipboard holds at most one track) and goes on into one of two renders,
+  `0x8f003e8c(object)` or `0x8f003c78(object)`. The worker hands it `[holder]`, the object, in R0 and nothing else;
+  neither render reads another register of the caller's. With `8 tracks` on the unit the entry jumps to that pack's
+  function, which hands a clipboard of tracks 1 to 4 on to the firmware's own code; its counter of renders of its own
+  stayed 0, so the firmware's render ran.
+- **The render has no early way out but an empty clipboard.** `0x8f003e8c` takes the clipboard's length
+  (`0x8f009710()`, the word at `0x84bdd9e4`) and the object's `frames` and renders the lesser of the two; it reads the
+  object's stereo byte and never writes it (an empty slot's is 1, so the cut was rendered as stereo); it zeroes the
+  frames it will render, opens the lifted tracks' stores, reads and writes the pool from its first word, closes them
+  and ends with the overview (`0x8f0037be`). It tests no flag of the object or the holder, and nothing says "this
+  slot is a sampler". The work is done inside it; the calls the worker makes afterwards only mark.
+- **"0 ms" said nothing.** The base's clock moves once a frame, so a call inside one frame always measures 0.
+- **`words` is not the sample's length.** The word at object + 0xd76c is written in two places only, both in the
+  load of a sound's file (`0x8f0035c4`, `0x8f003624`). Neither render of a drop writes it, nor `frames`, and
+  recording does not either. Version 3 read the length from `words`, found 0, and called the slot empty: **the drop
+  very likely worked and the pack hid it.** That is not shown yet: version 3 did not look at the pool.
+- **The second press 46 s later** was logged as a key not taken. Of the cheap checks only two can say no to key 11 on
+  an armed unit: a drop already under way (then the key is taken and dropped, with no line) or shift held. So shift
+  was held, and shift and drop is left to the unit on purpose. Version 4 says so in its line.
+
+What version 4 does differently:
+
+- **Where the sample ends** no longer comes from `words` (see `sampler_region.h`): the pool up to its last frame that
+  is not silent; after a drop of the pack's own, exactly the frames that drop rendered (the clipboard's length, at
+  most what the sample may hold), for as long as the pool's sum stays what it was right after the call.
+- **The page says `DROPPED` only when the pool's sum changed**, else `DROP: NOTHING CHANGED`.
+- **The log** has the object's fields before and after (frames, words, stereo, kind, its three unknown words), the
+  pool's sum before and after and whether it changed, the frame the sound reaches, the worker's queue before and
+  after, and 40 frames later the sum and the queue once more (should anything go on working after the call).
+- The call, its argument, its thread and every check are as in version 3. No field of the object or the holder is
+  written by the pack: stock's own drop writes none either.
+
+**It worked** when the line after the call says `the pool changed` and `sounding to frame` is near the clipboard's
+length, the line `veffgranular: sampler source of synth <n>: frames 0 to <length> of ..., a drop of our own` follows,
+and the page shows the cut. `THE POOL IS AS IT WAS` with a clipboard that is not silent would mean the import does
+refuse us after all, by a test not found in this reading.

@@ -485,48 +485,52 @@ int main(int argc, char** argv) {
         { const char raw[4] = { '1', '2', '7', '9' }; CHECK(key_from_text(raw, 3) == 127 && key_from_text(raw, 4) == 11 && key_from_text(raw, 0) == 11, "a text with no end"); }
     }
 
-    // ---- the sampler's region, from the fields a probe pack printed on a unit
+    // ---- the sampler's region: where the pool's sound ends (the object does not say, after a drop)
     {
-        struct { unsigned frames, words, stereo; int want; unsigned first, end; } T[] = {
-            { 264608, 0, 1, SAMPLER_EMPTY, 0, 0 },            // a slot nothing was put in
-            { 264608, 0, 0, SAMPLER_EMPTY, 0, 0 },
-            { 264600, 0, 1, SAMPLER_EMPTY, 0, 0 },            // a load under way
-            { 264600, 8, 0, SAMPLER_EMPTY, 0, 0 },            // the head pad alone
-            { 264600, 9, 0, SAMPLER_EMPTY, 0, 0 },            // one frame
-            { 264600, 16392, 0, SAMPLER_OK, 8, 16392 },       // a drop of 16,384 mono frames
-            { 264600, 65544, 0, SAMPLER_OK, 8, 65544 },
-            { 264600, 176408, 0, SAMPLER_OK, 8, 176408 },
-            { 264600, 264600, 0, SAMPLER_OK, 8, 264600 },     // full, mono
-            { 264600, 529200, 1, SAMPLER_OK, 4, 264600 },     // full, stereo
-            { 264600, 529200, 0, SAMPLER_OK, 8, 264600 },     // mono never past the frames the object says
-            { 264600, 0xffffffffu, 1, SAMPLER_OK, 4, 264600 },// a wild count never leaves the pool
-            { 264600, 0xffffffffu, 0, SAMPLER_OK, 8, 264600 },
-            { 100, 529200, 1, SAMPLER_OK, 4, 100 },
-            { 5, 529200, 1, SAMPLER_EMPTY, 0, 0 },
-            { 264600, 20000, 2, SAMPLER_BAD_STEREO, 0, 0 },
-            { 264600, 20001, 1, SAMPLER_OK, 4, 10000 },       // an odd count of words, stereo: the half frame is left out
-        };
-        for (auto& t : T) {
-            unsigned first = 99, end = 99;
-            const int got = sampler_region(t.frames, t.words, t.stereo, &first, &end);
-            CHECK(got == t.want && first == t.first && end == t.end, "sampler region frames %u words %u stereo %u: %d, %u..%u", t.frames, t.words, t.stereo, got, first, end);
-            if (got == SAMPLER_OK) {                          // what the pack publishes passes the render's own checks
-                GrainSource g = { (const short*)&T, end, t.stereo, first, end, 60, 65536, 1, 1 };
-                CHECK(grain_source_ok(g), "a sampler region the render would refuse");
-                CHECK((unsigned long long)end * (t.stereo ? 2u : 1u) <= (unsigned long long)SAMPLER_POOL_WORDS, "a sampler region past the pool");
-            }
+        const unsigned POOL = SAMPLER_POOL_WORDS;
+        std::vector<short> pool(POOL + 64, 0);                    // 64 words beyond, which must stay unread
+        short* d = pool.data();
+        auto region = [&](unsigned frames, unsigned stereo, unsigned known, unsigned& first, unsigned& end) { return sampler_region(d, frames, stereo, known, &first, &end); };
+        unsigned first, end;
+        CHECK(sampler_capacity(264608, 1) == 264600 && sampler_capacity(264608, 0) == 264608 && sampler_capacity(264600, 0) == 264600 &&
+              sampler_capacity(0xffffffffu, 0) == POOL && sampler_capacity(0xffffffffu, 1) == POOL / 2 && sampler_capacity(100, 1) == 100, "the capacity");
+        // an empty slot, as the probe printed it: frames 264608, stereo 1, all silent
+        CHECK(region(264608, 1, 0, first, end) == SAMPLER_EMPTY && region(264608, 0, 0, first, end) == SAMPLER_EMPTY, "a silent pool is not empty");
+        CHECK(region(264600, 2, 0, first, end) == SAMPLER_BAD_STEREO, "a stereo byte of 2 is taken");
+        // a mono drop of 30,000 frames from the pool's first word, as the drop writes it
+        for (unsigned i = 0; i < 30000; ++i) d[i] = (short)(1000 + (i & 255));
+        CHECK(region(264600, 0, 0, first, end) == SAMPLER_OK && first == 0 && end == 30000, "a mono drop: %u..%u", first, end);
+        // the same words read as stereo: 15,000 frames
+        CHECK(region(264600, 1, 0, first, end) == SAMPLER_OK && first == 0 && end == 15000, "a stereo drop: %u..%u", first, end);
+        // silence inside the sound does not end it; only the silent tail is left out
+        for (unsigned i = 10000; i < 20000; ++i) d[i] = 0;
+        CHECK(region(264600, 0, 0, first, end) == SAMPLER_OK && end == 30000, "silence inside the sound ends it at %u", end);
+        // a drop of our own, known: its frames, never past the capacity, whatever lies behind (an older, longer sample)
+        for (unsigned i = 30000; i < 200000; ++i) d[i] = 77;
+        CHECK(region(264600, 0, 0, first, end) == SAMPLER_OK && end == 200000, "the leftover is not found: %u", end);
+        CHECK(region(264600, 0, 30000, first, end) == SAMPLER_OK && end == 30000, "a known drop: %u", end);
+        CHECK(region(264600, 0, 999999, first, end) == SAMPLER_OK && end == 264600 && region(264600, 1, 999999, first, end) == SAMPLER_OK && end == 264600, "a known drop past the capacity: %u", end);
+        CHECK(region(264600, 0, 1, first, end) == SAMPLER_EMPTY, "a drop of one frame is taken");
+        // sound up to the last word, mono and stereo; the object's frames above the pool: never a read past it
+        for (unsigned i = 0; i < POOL; ++i) d[i] = 5;
+        for (unsigned i = POOL; i < POOL + 64; ++i) d[i] = 9999;  // would be found if the scan left the pool
+        CHECK(region(0xffffffffu, 0, 0, first, end) == SAMPLER_OK && end == POOL, "mono to the pool's end: %u", end);
+        CHECK(region(0xffffffffu, 1, 0, first, end) == SAMPLER_OK && end == POOL / 2, "stereo to the pool's end: %u", end);
+        CHECK(region(264608, 1, 0, first, end) == SAMPLER_OK && end == 264600, "frames 264608, stereo: %u", end);
+        // random ends: the scan finds the last frame of a dense sound exactly, at every place against its steps
+        unsigned rs = 3, wrong = 0;
+        for (int t = 0; t < 3000; ++t) {
+            rs = rs * 1664525u + 1013904223u; const unsigned stereo = t & 1u, cap = sampler_capacity(264600, stereo);
+            rs = rs * 1664525u + 1013904223u; const unsigned len = (rs >> 7) % (cap + 1u);
+            std::fill(pool.begin(), pool.begin() + POOL, (short)0);
+            for (unsigned i = 0; i < len * (stereo ? 2u : 1u); ++i) d[i] = (short)(1 + (i % 7));
+            if (stereo && len) { d[2 * len - 1] = 0; d[2 * len - 2] = 3; }   // a last frame with one silent side still sounds
+            const int got = region(264600, stereo, 0, first, end);
+            if (len < 2 ? got != SAMPLER_EMPTY : (got != SAMPLER_OK || first != 0 || end != len)) ++wrong;
+            if (got == SAMPLER_OK) { GrainSource g = { d, end, stereo, first, end, 60, 65536, 1, 1 }; if (!grain_source_ok(g)) ++wrong; }
         }
-        unsigned rs = 7, bad = 0;
-        for (int i = 0; i < 200000; ++i) {
-            rs = rs * 1664525u + 1013904223u; const unsigned frames = (rs >> 8) % 600000u;
-            rs = rs * 1664525u + 1013904223u; const unsigned words = (i & 7) ? (rs >> 6) % 1100000u : rs;
-            const unsigned stereo = i & 1u;
-            unsigned first, end;
-            if (sampler_region(frames, words, stereo, &first, &end) != SAMPLER_OK) continue;
-            if (!(first + 2u <= end && end <= frames && end * (stereo ? 2u : 1u) <= (unsigned)SAMPLER_POOL_WORDS && end * (stereo ? 2u : 1u) <= words)) ++bad;
-        }
-        CHECK(!bad, "%u random sampler regions out of bounds", bad);
-        std::printf("sampler region: 17 cases from the probe's lines, 200000 random ones\n");
+        CHECK(!wrong, "%u random pools read wrong", wrong);
+        std::printf("sampler region: the probe's cases, drops with leftovers, 3000 random pools\n");
     }
 
     // ---- the cost: the most grains a voice held at once, and the worst block's grain-frames

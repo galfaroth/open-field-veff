@@ -124,7 +124,7 @@ times feedback.
 
 ## Engine: veffgranular
 
-> **This branch (`veffgranular-drop`) holds version 3, an experiment for one unit and not for the listing.** While the engine's page is up, the drop key calls the firmware's own import of the tape clipboard for the slot's sample (OS 1.7.3+0 only, behind a sum of the firmware's bytes), so a lifted cut can be dropped without going through `sampler`. The call is made on a thread the firmware does not make it on; it has never run on a unit and may hang it. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number. Shift and drop is left to the unit. The drop key is taken to be key 11; a file `dropkey.txt` in the folder `veffgranular` with another number corrects that. Everything about it, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
+> **This branch (`veffgranular-drop`) holds version 4, an experiment for one unit and not for the listing.** While the engine's page is up, the drop key calls the firmware's own import of the tape clipboard for the slot's sample (OS 1.7.3+0 only, behind a sum of the firmware's bytes), so a lifted cut can be dropped without going through `sampler`. The call is made on a thread the firmware does not make it on; it has never run on a unit and may hang it. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number. Shift and drop is left to the unit. The drop key is taken to be key 11; a file `dropkey.txt` in the folder `veffgranular` with another number corrects that. Everything about it, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
 
 <img src="pictures/veffgranular.png" alt="veffgranular" width="480">
 
@@ -161,8 +161,8 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 3. For new material go back to `sampler`, drop or record, and return.
 
 - OS 1.7.3+0 only, read only. When a check fails (another firmware, an address that does not look right) the file source plays instead.
-- The length is what the sampler says the last drop, recording or load wrote, so a short drop plays as a short sample, with nothing of an older sample behind it.
-- A slot the sampler holds nothing in says `SAMPLER n EMPTY: DROP IN THE SAMPLER` (unless a file plays).
+- Where the sample ends is not written anywhere after a drop or a recording (the count version 2 read is only set when a sound's file is loaded). So the sample is the slot's buffer up to its last frame that is not silent. A short drop over an older, longer sample therefore plays with the older one's remainder behind it; a drop made on the engine's own page (this branch's experiment) is known exactly.
+- A slot whose buffer is silent says `SAMPLER n EMPTY: LIFT, THEN DROP HERE` (unless a file plays).
 - To switch this source off and play files only, put a file named `sampler.off` (any content) in the folder `veffgranular`. A `sampler.on` left from version 1 does nothing.
 
 What is not known or not yet possible:
