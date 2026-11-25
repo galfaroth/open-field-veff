@@ -124,13 +124,15 @@ times feedback.
 
 ## Engine: veffgranular
 
+**Drop a lifted cut on the engine's own page** (version 6, OS 1.7.3+0 only). Lift one track on the tape, open the engine's page (T1) and press drop: the pack calls the firmware's own import of the tape clipboard for that slot's sample, and the grains play the cut. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number (6: more than one track lifted; 7: the unit is busy with the clipboard; 8: a stereo cut longer than a never-used slot holds). Shift and drop is left to the unit. The call is behind a sum of the firmware's own bytes, so on any other firmware the key is left to the unit and nothing is called. It is made on the display thread, not on the firmware's own worker: on the one unit that tried it, it worked on slots that had held a sampler's sample and on slots that never had; it has not been tried on another unit, and it is not what the firmware's authors planned for. What was read, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
+
 <img src="pictures/veffgranular.png" alt="veffgranular" width="480">
 
 A granular sample synth, in the unit's own list of **engines** (shift and T1 on a synth sound), in the spirit of Granulator III. Each key plays grains of one sample, pitched from the note against the sample's root (C4 unless the file says otherwise). Stereo out, six voices, up to four grains a voice (three with a stereo sample). Built for open-field 0.14 (base level 10).
 
-**What was tried on a unit** (one unit, OS 1.7.3, open-field 0.19): the pack loads, the engine shows in the list and plays, its page stands in, and the cost of a render was measured with no sample loaded. The probe pack confirmed where the synth sampler keeps each slot's sample. Playing a sampler's sample as grains has been switched on on that unit but not yet reported back; the sound of the grains was tested on a computer.
+**What was tried on a unit** (one unit, OS 1.7.3, open-field 0.19): version 6 loads, the engine shows in the list and plays the synth sampler's sample of its slot, its page stands in, and drops on the page were made as described above. Version 1's cost of a render was measured with no sample loaded; with a sample, and for version 6, it is not measured yet. A probe pack confirmed where the synth sampler keeps each slot's sample. Version 4, an earlier build of the drop, hung the same unit at start twice; the cause was not found, and versions 5 and 6 bound the work done each frame. The grains' sound across the settings was tested on a computer.
 
-**The intended way to work** is the sampler's: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` and play that same sample as grains. That needs the engine to read the sample the synth sampler holds for the sound's slot. A way to do it was found by reading the firmware on a computer and confirmed by a probe pack on one unit. It is built in, and **off** until you switch it on with a file (below). Until then the engine plays a file from its own folder.
+**The way to work is the sampler's**: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` (shift and T1) and play that same sample as grains. The engine reads the sample the synth sampler holds for the sound's slot, in place. Where that sample lies was read in the firmware on a computer and confirmed by a probe pack on one unit. From version 2 this is the default; a slot with no sample falls back to a file from the pack's folder.
 
 | Mode (press the 1st knob) | What the grains do |
 | --- | --- |
@@ -141,14 +143,39 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
 | Knobs | position (0..100% of the sample) | size (5 ms..1 s) | density (0.5..5 grains at once) | spray (0..2 s around the position) |
-| Shift held | scan (-2x..+2x: the position travels through the sample, backwards below 0) | spread (pan and a little detune between grains) | tune (-24..+24 semitones) | volume |
+| Shift held (page A) | scan (-2x..+2x: the position travels through the sample, backwards below 0) | shape (-100 a pluck, 0 an even bell, +100 a swell with a sharp end) | tune (-24..+24 semitones) | reverse (0..100%: the chance that a grain plays backward) |
+| Shift held, page B | spread (pan and a little detune between grains) | volume | pitch random (each grain up to ±12 semitones off) | level random (each grain quieter by a random part) |
 
-- Presses without shift: 1st the mode, 2nd the window (soft, flat, pluck, tri), 3rd the loop's length, 4th the next file (1..8).
-- With shift, a press puts its value back: scan 0, spread 30, tune 0, volume 80.
-- The eight knob values are kept by the unit with the sound. Mode, window, loop length and file number are kept with the sound too (level 7, `veffgranular_set`).
-- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays. The tag beside the title is the mode, or `SHIFT` while shift is held. Top right: the source, the window and (loop) the loop's length.
+- **Shift and a press of the 1st knob steps between the two shift pages**, A and B. The tag beside the title says `SHIFT A` or `SHIFT B`.
+- Presses without shift: 1st the mode, 2nd puts shape back to 0, 3rd the loop's length, 4th the next file (1..8).
+- With shift, a press of the 2nd, 3rd or 4th knob puts that page's value back: on A shape 0, tune 0, reverse 0; on B volume 80, pitch random 0, level random 0.
+- Shape moves the top of each grain's window: at -100 it stands at 1/32 of the grain (an attack, then a long fall), at +100 at 31/32. A rise or a fall is never shorter than 16 frames, so no setting clicks. The grain's length does not change. The four stepped windows of version 1 are gone.
+- The eight values of the knobs and of page A are the unit's own: it keeps them with the sound, and its LFOs can move them (shape and reverse too). Page B's four values, the mode, the loop length and the file number are kept with the sound by the pack (level 7, `veffgranular_set`); the LFOs do not reach those.
+- **A sound saved with version 1.** Values 6 and 8 were spread and volume there and are shape and reverse now. A version 1 sound is recognised by its saved record, or, when it has none, by those two values standing exactly at version 1's starts (spread 30, volume 80); its spread and volume are then moved to page B, and shape and reverse start at 0. A version 1 sound whose spread or volume you changed and which has no record (you never pressed a knob on its page) cannot be told apart: it loads with a shape and a reverse made from its old spread and volume, and with spread 30 and volume 80. Set them once and save.
+- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays; a grain that plays backward is drawn hollow. The tag beside the title is the mode, or the shift page while shift is held. Top right: the source, the loop's length (loop mode), `REV` when reverse is above 0, and a small drawing of the grain's shape.
 
-### The sample from a file in the pack's folder
+### The sample from the synth sampler (the default)
+
+1. On the synth sound you want, pick `sampler` (shift and T1) and give it a sample as always: drop a lifted cut, record, or load a sound.
+2. Pick `veffgranular` on the same sound. The page's top right says `SAMPLER` and the slot's number, and the overview is the sample.
+3. For new material go back to `sampler`, drop or record, and return.
+
+- OS 1.7.3+0 only, read only. When a check fails (another firmware, an address that does not look right) the file source plays instead.
+- Where the sample ends: after a drop on the engine's own page, exactly the frames that drop rendered; for a slot the sampler loaded from a file, what the sampler's own count says; for a slot never loaded that holds sound all the same (a drop or a recording on the sampler's page), the buffer up to its last frame that is not silent, found a little each frame (the page says `READING THE SAMPLER` for a moment). The sampler writes its count only when it loads a file, so a drop made on the sampler's own page over a loaded sample plays with the old sample's length.
+- A slot whose buffer is silent says `SAMPLER n EMPTY: LIFT, THEN DROP HERE` (unless a file plays).
+- To switch this source off and play files only, put a file named `sampler.off` (any content) in the folder `veffgranular`. A `sampler.on` left from version 1 does nothing.
+
+What is not known or not yet possible:
+
+- A drop on the engine's page is not marked for the unit as a change of the sound: after a restart the slot may hold what the sampler last loaded. A drop made on the sampler's own page over a loaded sample plays with the loaded sample's length.
+- The pack writes one line in the log for each key that goes down while its page is up and that it does not take, with the key's number.
+
+- The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts.
+- The sampler's own start, end and loop points and root note are not found yet: the engine uses all of what was dropped or recorded and C4 as the root. Use position and tune.
+- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
+- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+
+### The sample from a file in the pack's folder (when the slot's sampler is empty, or with `sampler.off`)
 
 1. Connect the unit in disk mode. Next to `synth`, `drum` and `tapes` there is a folder `veffgranular`.
 2. Put a sample in it, named with its number first: `1.wav`, `2 pad.aif`, and so on, up to `8`. WAV or AIFF/AIFC (`NONE` or `sowt`), 16, 24 or 32-bit PCM, mono or stereo, 8 to 192 kHz. At most 4 MiB (about 47 s mono or 23 s stereo at 16-bit, 44.1 kHz). A `smpl` (WAV) or `INST` (AIFF) chunk sets the root note.
@@ -156,25 +183,19 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 
 With no file, a file that isn't one of these, or no memory for it, the engine is silent and the page says why. Only one file is in memory at a time.
 
-### The sample from the synth sampler (switched on by a file)
+### Its own sounds
 
-The source that reads the synth sampler's sample of the sound's slot is in the pack, OS 1.7.3+0 only, and **off** until you switch it on: put a file named `sampler.on` (any content) in the `veffgranular` folder; take it out to switch it off. While it is on and its checks pass, the engine plays the sampler's sample; when they fail (another firmware, an address that does not look right), the file source plays as before. The flow is then: switch the sound to `sampler` to drop, record or trim, then back to `veffgranular` to play it.
-
-What is not known or not yet possible:
-
-- The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts. It also showed that an empty slot and the length of what was dropped can be told apart.
-- There is no drop on the engine's own page: the engine stands on `dsynth`, which takes none. Switch to `sampler`, drop, switch back.
-- The sampler's own start, end and loop points and root note are not found yet: the engine uses the whole recording (up to where its zeroed tail begins) and C4 as the root. Use position and tune.
-- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
-- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+Four sounds come with the pack and show in the sound list after the next start, in a folder `veffgranular`: `pad`, `freeze`, `shards` and `scan`. They are settings of the eight values, envelopes and an effect only (page B and the mode start where every sound does): a sound file cannot carry a sample, so each plays whatever the slot's sampler holds.
 
 ### Cost
 
 The unit's limit for an engine is 40,000 cycles a voice's render; veffgranular declares 40,000. Measured on a unit with no sample loaded only: 7,300 cycles on average and 13,432 at most, never over. With a sample it is **not measured yet**. The estimate from the compiled inner loop: about 60 instructions a grain-frame with a stereo sample (45 mono), plus the reads of the sample in the unit's main memory, so about 30,000-36,000 cycles a render at the grain cap (3 stereo or 4 mono grains through the whole block). The worst case is cloud or high density at a high note with a stereo sample: the grains read far apart and each read can miss the cache. If the log's `engine: 'veffgranular' this period:` line shows renders over the declared cost, lower `ACTIVE_MOST_STEREO` / `ACTIVE_MOST_MONO` in `granular_core.h`.
 
+Version 2's shape, reverse and the two random values add nothing a frame that could be counted: the shape is one comparison a grain-frame (which of two steps the window takes), a reversed grain runs the same loop downward, and the random values act once, when a grain starts. In the code compiled for the unit the four grain loops are 60 to 77 instructions long, against 69 to 81 in version 1 (counted in the compiler's output, not measured). A tone filter a grain was left out because it would cost every frame.
+
 ### Tested on a computer
 
-`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones.
+`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones. Version 2 adds: single grains over a constant sample at every shape, size and direction (no step steeper than a 16-frame edge allows, the top where the shape puts it), overlapping grains keeping the even bell's level, 148 reversed runs with a region that is not at 0 (no read outside it), a reversed grain shown to read a ramp downward, and the sampler's region from the fields the probe printed.
 
 ## Thumbnails
 
@@ -208,4 +229,4 @@ sh veff/veffgraindelay/tests/run_tests.sh /tmp/veffgraindelay-renders
   determinism, and writes WAV files of test sounds through several settings and the page as PNG into that folder.
 
 
-`veffgranular` builds the same way inside an open-field 0.14 checkout (`open-field-catalog`), at `veff/veffgranular/`; `gen_tables.py` writes `veffgranular_tables.h`.
+`veffgranular` builds with `OPEN_FIELD=<an open-field 0.14 checkout> sh veffgranular/tests/build_pack.sh` (`gen_tables.py` writes `veffgranular_tables.h`). The script refuses a pack that needs any name but open-field's own (`op1f_...`): the unit has no C library, and a struct copied as a whole or a division can make the compiler call `memcpy`, `memset` or a libgcc routine, for which the loader leaves the pack out at the start ("nobody offers the name it needs"). `tools/pack_build.py check` prints such a name in its line `wants:` and does not fail. Version 5 was lost to this on a unit; version 6 needs `op1f_level_10`, `op1f_list`, `op1f_log`, `op1f_memory`, `op1f_page_stand_in`, `op1f_paint_box`, `op1f_paint_line`, `op1f_param_get`, `op1f_param_heard`, `op1f_param_set`, `op1f_read`, `op1f_riding`, `op1f_value_get`, `op1f_value_set` and nothing else.

@@ -23,33 +23,26 @@ WINDOW_POINTS = 1025
 def hann(x): return math.sin(math.pi * x) ** 2
 
 
-def tukey(x, r=0.5):                    # flat top, cosine edges each r/2 of the grain
-    e = r / 2
-    if x < e: return 0.5 * (1 - math.cos(math.pi * x / e))
-    if x > 1 - e: return 0.5 * (1 - math.cos(math.pi * (1 - x) / e))
-    return 1.0
-
-
-def perc(x):                            # a fast rise (5%) and an exponential fall to 0 at the end
-    if x < 0.05: return math.sin(0.5 * math.pi * x / 0.05) ** 2
-    y = (x - 0.05) / 0.95
-    return math.exp(-4.0 * y) * (1 - y) ** 0.5
-
-
-def tri(x): return 1 - abs(2 * x - 1)
-
-
 def q15(v): return max(0, min(32767, int(round(v * 32767))))
 
 
-shapes = [("soft", hann), ("flat", tukey), ("pluck", perc), ("tri", tri)]
-win = []
-for _, f in shapes:
-    for i in range(WINDOW_POINTS):
-        win.append(q15(f(min(1.0, i / (WINDOW_POINTS - 1)))))
-out.append("// the window shapes, in the order the page names them: " + ", ".join(n for n, _ in shapes) + "\n")
-out.append(f"enum {{ WINDOW_SHAPES = {len(shapes)}, WINDOW_POINTS = {WINDOW_POINTS} }};\n")
+win = [q15(hann(min(1.0, i / (WINDOW_POINTS - 1)))) for i in range(WINDOW_POINTS)]
+out.append("// the window: a raised cosine, 0 at both ends, its top at the middle point\n")
+out.append(f"enum {{ WINDOW_POINTS = {WINDOW_POINTS} }};\n")
 out.append(arr("WINDOW", win, 16, "unsigned short"))
+
+# ---- shape: -100..100 (index + 100) moves the window's top. The rise takes the part a of the grain and the fall the
+# rest: a = 1/32 at -100 (a pluck), 1/2 at 0, 31/32 at +100 (a swell with a sharp end). The render walks the window's
+# first half at wstep * KA and its second half at wstep * KD, KA = 0.5 / a and KD = 0.5 / (1 - a), so the grain is as
+# long as before.
+def rise(sv):
+    small = 0.5 * (1.0 / 16.0) ** (abs(sv) / 100.0)
+    return small if sv <= 0 else 1.0 - small
+out.append("// shape -100..100 at index shape + 100: the window's step over its rise and over its fall, times wstep, Q11\n")
+out.append(arr("SHAPE_KA_Q11", [int(round(0.5 / rise(v) * 2048)) for v in range(-100, 101)], 12, "unsigned short"))
+out.append(arr("SHAPE_KD_Q11", [int(round(0.5 / (1.0 - rise(v)) * 2048)) for v in range(-100, 101)], 12, "unsigned short"))
+out.append("// where the top stands, 0..255 of the grain, for the page\n")
+out.append(arr("SHAPE_TOP", [int(round(rise(v) * 255)) for v in range(-100, 101)], 16, "unsigned char"))
 
 # ---- grain size: 0..100 to 5 ms .. 1000 ms, exponential, in output frames; and the window's step, 2^32 / frames,
 # rounded down so frames * step stays below 2^32 (the phase wraps only after the last frame).

@@ -1,7 +1,7 @@
 {
-  "about": "veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, spread, tune, volume. Presses: mode, window, loop length, file; with shift a press resets its value. The sample: a WAV or AIFF named 1..8 in the folder veffgranular (4 MiB of working memory), or, switched on by a file sampler.on there, the synth sampler's own sample of the sound's slot (OS 1.7.3+0, not confirmed on a unit). Veff page. Changes no place of the firmware; needs the base.",
+  "about": "Version 6: the drop key on the page calls the firmware's own import of the tape clipboard for the slot's sample, OS 1.7.3+0 only, tried on one unit (DROP.md). veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, shape (pluck, bell, swell), tune, reverse (the chance a grain plays backward). A second shift page (shift and a press of the 1st knob): spread, volume, pitch random, level random. The sample is the synth sampler's own sample of the sound's slot (OS 1.7.3+0, read only; a file sampler.off in the folder veffgranular switches that off), else a WAV or AIFF named 1..8 in that folder (4 MiB of working memory). Four sounds of its own. Veff page. Changes no place of the firmware; needs the base.",
   "name": "veffgranular",
-  "version": 1,
+  "version": 6,
   "interface": 1,
   "build": "veff_veffgranular",
   "sources": [
@@ -64,10 +64,10 @@
             "start": 0
           },
           {
-            "name": "spread",
-            "low": 0,
+            "name": "shape",
+            "low": -100,
             "high": 100,
-            "start": 30
+            "start": 0
           },
           {
             "name": "tune",
@@ -76,13 +76,30 @@
             "start": 0
           },
           {
-            "name": "volume",
+            "name": "reverse",
             "low": 0,
             "high": 100,
-            "start": 80
+            "start": 0
           }
         ],
-        "sounds": []
+        "sounds": [
+          {
+            "name": "pad",
+            "file": "pad.json"
+          },
+          {
+            "name": "freeze",
+            "file": "freeze.json"
+          },
+          {
+            "name": "shards",
+            "file": "shards.json"
+          },
+          {
+            "name": "scan",
+            "file": "scan.json"
+          }
+        ]
       },
       {
         "kind": "memory",
