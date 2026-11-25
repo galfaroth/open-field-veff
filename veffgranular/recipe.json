@@ -1,5 +1,5 @@
 {
-  "about": "veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, spread, tune, volume. The sample is the synth sampler's own sample of the sound's slot (OS 1.7.3+0, read only; a file sampler.off in the folder veffgranular switches that off), else a WAV or AIFF named 1..8 in that folder (4 MiB of working memory). Four sounds of its own. Veff page. Changes no place of the firmware; needs the base.",
+  "about": "veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, shape (pluck, bell, swell), tune, reverse (the chance a grain plays backward). A second shift page (shift and a press of the 1st knob): spread, volume, pitch random, level random. The sample is the synth sampler's own sample of the sound's slot (OS 1.7.3+0, read only; a file sampler.off in the folder veffgranular switches that off), else a WAV or AIFF named 1..8 in that folder (4 MiB of working memory). Four sounds of its own. Veff page. Changes no place of the firmware; needs the base.",
   "name": "veffgranular",
   "version": 2,
   "interface": 1,
@@ -64,10 +64,10 @@
             "start": 0
           },
           {
-            "name": "spread",
-            "low": 0,
+            "name": "shape",
+            "low": -100,
             "high": 100,
-            "start": 30
+            "start": 0
           },
           {
             "name": "tune",
@@ -76,17 +76,29 @@
             "start": 0
           },
           {
-            "name": "volume",
+            "name": "reverse",
             "low": 0,
             "high": 100,
-            "start": 80
+            "start": 0
           }
         ],
         "sounds": [
-          {"name": "pad", "file": "pad.json"},
-          {"name": "freeze", "file": "freeze.json"},
-          {"name": "shards", "file": "shards.json"},
-          {"name": "scan", "file": "scan.json"}
+          {
+            "name": "pad",
+            "file": "pad.json"
+          },
+          {
+            "name": "freeze",
+            "file": "freeze.json"
+          },
+          {
+            "name": "shards",
+            "file": "shards.json"
+          },
+          {
+            "name": "scan",
+            "file": "scan.json"
+          }
         ]
       },
       {

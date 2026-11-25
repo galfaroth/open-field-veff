@@ -141,12 +141,16 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
 | Knobs | position (0..100% of the sample) | size (5 ms..1 s) | density (0.5..5 grains at once) | spray (0..2 s around the position) |
-| Shift held | scan (-2x..+2x: the position travels through the sample, backwards below 0) | spread (pan and a little detune between grains) | tune (-24..+24 semitones) | volume |
+| Shift held (page A) | scan (-2x..+2x: the position travels through the sample, backwards below 0) | shape (-100 a pluck, 0 an even bell, +100 a swell with a sharp end) | tune (-24..+24 semitones) | reverse (0..100%: the chance that a grain plays backward) |
+| Shift held, page B | spread (pan and a little detune between grains) | volume | pitch random (each grain up to ±12 semitones off) | level random (each grain quieter by a random part) |
 
-- Presses without shift: 1st the mode, 2nd the window (soft, flat, pluck, tri), 3rd the loop's length, 4th the next file (1..8).
-- With shift, a press puts its value back: scan 0, spread 30, tune 0, volume 80.
-- The eight knob values are kept by the unit with the sound. Mode, window, loop length and file number are kept with the sound too (level 7, `veffgranular_set`).
-- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays. The tag beside the title is the mode, or `SHIFT` while shift is held. Top right: the source, the window and (loop) the loop's length.
+- **Shift and a press of the 1st knob steps between the two shift pages**, A and B. The tag beside the title says `SHIFT A` or `SHIFT B`.
+- Presses without shift: 1st the mode, 2nd puts shape back to 0, 3rd the loop's length, 4th the next file (1..8).
+- With shift, a press of the 2nd, 3rd or 4th knob puts that page's value back: on A shape 0, tune 0, reverse 0; on B volume 80, pitch random 0, level random 0.
+- Shape moves the top of each grain's window: at -100 it stands at 1/32 of the grain (an attack, then a long fall), at +100 at 31/32. A rise or a fall is never shorter than 16 frames, so no setting clicks. The grain's length does not change. The four stepped windows of version 1 are gone.
+- The eight values of the knobs and of page A are the unit's own: it keeps them with the sound, and its LFOs can move them (shape and reverse too). Page B's four values, the mode, the loop length and the file number are kept with the sound by the pack (level 7, `veffgranular_set`); the LFOs do not reach those.
+- **A sound saved with version 1.** Values 6 and 8 were spread and volume there and are shape and reverse now. A version 1 sound is recognised by its saved record, or, when it has none, by those two values standing exactly at version 1's starts (spread 30, volume 80); its spread and volume are then moved to page B, and shape and reverse start at 0. A version 1 sound whose spread or volume you changed and which has no record (you never pressed a knob on its page) cannot be told apart: it loads with a shape and a reverse made from its old spread and volume, and with spread 30 and volume 80. Set them once and save.
+- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays; a grain that plays backward is drawn hollow. The tag beside the title is the mode, or the shift page while shift is held. Top right: the source, the loop's length (loop mode), `REV` when reverse is above 0, and a small drawing of the grain's shape.
 
 ### The sample from the synth sampler (the default)
 
@@ -176,15 +180,17 @@ With no file, a file that isn't one of these, or no memory for it, the engine is
 
 ### Its own sounds
 
-Four sounds come with the pack and show in the sound list after the next start, in a folder `veffgranular`: `pad`, `freeze`, `shards` and `scan`. They are knob settings, envelopes and an effect only: a sound file cannot carry a sample, so each plays whatever the slot's sampler holds.
+Four sounds come with the pack and show in the sound list after the next start, in a folder `veffgranular`: `pad`, `freeze`, `shards` and `scan`. They are settings of the eight values, envelopes and an effect only (page B and the mode start where every sound does): a sound file cannot carry a sample, so each plays whatever the slot's sampler holds.
 
 ### Cost
 
 The unit's limit for an engine is 40,000 cycles a voice's render; veffgranular declares 40,000. Measured on a unit with no sample loaded only: 7,300 cycles on average and 13,432 at most, never over. With a sample it is **not measured yet**. The estimate from the compiled inner loop: about 60 instructions a grain-frame with a stereo sample (45 mono), plus the reads of the sample in the unit's main memory, so about 30,000-36,000 cycles a render at the grain cap (3 stereo or 4 mono grains through the whole block). The worst case is cloud or high density at a high note with a stereo sample: the grains read far apart and each read can miss the cache. If the log's `engine: 'veffgranular' this period:` line shows renders over the declared cost, lower `ACTIVE_MOST_STEREO` / `ACTIVE_MOST_MONO` in `granular_core.h`.
 
+Version 2's shape, reverse and the two random values add nothing a frame that could be counted: the shape is one comparison a grain-frame (which of two steps the window takes), a reversed grain runs the same loop downward, and the random values act once, when a grain starts. In the code compiled for the unit the four grain loops are 60 to 77 instructions long, against 69 to 81 in version 1 (counted in the compiler's output, not measured). A tone filter a grain was left out because it would cost every frame.
+
 ### Tested on a computer
 
-`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones.
+`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones. Version 2 adds: single grains over a constant sample at every shape, size and direction (no step steeper than a 16-frame edge allows, the top where the shape puts it), overlapping grains keeping the even bell's level, 148 reversed runs with a region that is not at 0 (no read outside it), a reversed grain shown to read a ramp downward, and the sampler's region from the fields the probe printed.
 
 ## Thumbnails
 

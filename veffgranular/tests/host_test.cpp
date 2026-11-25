@@ -109,6 +109,12 @@ static std::vector<unsigned char> file_aiff(const std::vector<short>& d, u32 ch,
     return b;
 }
 
+// the first grain in a render of grains that never overlap: [begin, end) in words of the left channel's pairs
+static void first_grain(const std::vector<short>& w, size_t& begin, size_t& end) {
+    begin = 0; while (begin < w.size() && w[begin] == 0) begin += 2;
+    end = begin; while (end < w.size() && w[end] != 0) end += 2;
+}
+
 // a note: `held` blocks with the key down, then `after` blocks released
 static void play(Run& r, const GrainSource& s, int midi, int held, int after, u32 period = 0) {
     r.block(s, step_of(midi), EV_FRESH | EV_BEGINS, period);
@@ -124,22 +130,28 @@ int main(int argc, char** argv) {
     const auto mono = make_sample(66150, 0, 0), stereo = make_sample(66150, 1, 0), noise = make_sample(44100, 0, 1);
 
     // ---- renders for listening, each mode at a few settings
-    struct Case { const char* name; u32 mode, window, loop; int values[VALUES]; int stereo, midi; };
+    struct Case { const char* name; u32 mode; int shape; u32 loop; int values[VALUES]; int stereo, midi; u32 reverse, pitch_random, level_random; };
     const Case cases[] = {
-        { "classic_default", MODE_CLASSIC, 0, 0, { 300, 50, 50, 10, 0, 30, 0, 80 }, 0, 60 },
-        { "classic_scan_fwd", MODE_CLASSIC, 0, 0, { 0, 40, 70, 5, 60, 50, 0, 80 }, 1, 60 },
-        { "classic_scan_back", MODE_CLASSIC, 1, 0, { 1000, 60, 60, 0, -50, 20, 0, 80 }, 1, 60 },
-        { "classic_short_pluck", MODE_CLASSIC, 2, 0, { 500, 10, 90, 30, 0, 80, 12, 80 }, 0, 67 },
-        { "loop_free", MODE_LOOP, 0, 0, { 400, 30, 60, 0, 0, 20, 0, 80 }, 1, 60 },
-        { "loop_eighth_120bpm", MODE_LOOP, 1, 2, { 200, 40, 50, 0, 10, 40, 0, 80 }, 1, 60 },
-        { "cloud_dense", MODE_CLOUD, 0, 0, { 500, 70, 100, 40, 0, 100, 0, 80 }, 1, 60 },
-        { "cloud_tri_low", MODE_CLOUD, 3, 0, { 300, 80, 80, 80, 20, 60, -12, 80 }, 0, 48 },
+        { "classic_default", MODE_CLASSIC, 0, 0, { 300, 50, 50, 10, 0, 30, 0, 80 }, 0, 60, 0, 0, 0 },
+        { "classic_scan_fwd", MODE_CLASSIC, 0, 0, { 0, 40, 70, 5, 60, 50, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "classic_scan_back", MODE_CLASSIC, 60, 0, { 1000, 60, 60, 0, -50, 20, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "classic_short_pluck", MODE_CLASSIC, -100, 0, { 500, 10, 90, 30, 0, 80, 12, 80 }, 0, 67, 0, 0, 0 },
+        { "classic_pluck_long", MODE_CLASSIC, -100, 0, { 300, 75, 40, 20, 0, 40, 0, 80 }, 0, 60, 0, 0, 0 },
+        { "classic_swell", MODE_CLASSIC, 100, 0, { 300, 70, 55, 10, 0, 40, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "classic_reversed", MODE_CLASSIC, 0, 0, { 400, 65, 60, 10, 0, 30, 0, 80 }, 1, 60, 100, 0, 0 },
+        { "classic_half_reversed", MODE_CLASSIC, -60, 0, { 400, 55, 70, 20, 0, 60, 0, 80 }, 0, 60, 50, 0, 0 },
+        { "classic_pitch_random", MODE_CLASSIC, -40, 0, { 300, 35, 75, 30, 0, 70, 0, 80 }, 0, 60, 0, 100, 0 },
+        { "classic_level_random", MODE_CLASSIC, 0, 0, { 300, 30, 80, 30, 0, 50, 0, 80 }, 0, 60, 20, 15, 100 },
+        { "loop_free", MODE_LOOP, 0, 0, { 400, 30, 60, 0, 0, 20, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "loop_eighth_120bpm", MODE_LOOP, 40, 2, { 200, 40, 50, 0, 10, 40, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "cloud_dense", MODE_CLOUD, 0, 0, { 500, 70, 100, 40, 0, 100, 0, 80 }, 1, 60, 0, 0, 0 },
+        { "cloud_swell_low", MODE_CLOUD, 70, 0, { 300, 80, 80, 80, 20, 60, -12, 80 }, 0, 48, 0, 0, 0 },
     };
     const u32 period120 = (u32)std::lround(44100.0 * 60 / 120 / 96 * 262144.0);
     int max_grains = 0;
     for (const Case& c : cases) {
         Owned o; o.set(c.stereo ? stereo : mono, c.stereo, 0, 66150);
-        Run r; r.set = { c.mode, c.window, c.loop }; std::memcpy(r.values, c.values, sizeof r.values);
+        Run r; r.set = { c.mode, c.loop, c.shape, c.reverse, c.pitch_random, c.level_random }; std::memcpy(r.values, c.values, sizeof r.values);
         play(r, o.src, c.midi, 3 * BLOCKS_PER_S, BLOCKS_PER_S, c.mode == MODE_LOOP ? period120 : 0);
         const double pk = r.peak();
         std::printf("render %-22s peak %.3f, grains at once at most %d\n", c.name, pk, r.max_grains);
@@ -209,7 +221,7 @@ int main(int argc, char** argv) {
     // ---- a region inside a longer sample, which moves under a held note (the sampler's start and end points)
     {
         Owned o; o.set(mono, 0, 20000, 30000);
-        Run r; r.set = { MODE_CLASSIC, 0, 0 }; r.values[V_SPRAY] = 100; r.values[V_SCAN] = 100;
+        Run r; r.set = { MODE_CLASSIC, 0, 0, 0, 0, 0 }; r.values[V_SPRAY] = 100; r.values[V_SCAN] = 100;
         r.block(o.src, step_of(60), EV_FRESH | EV_BEGINS);
         for (int i = 0; i < 200; ++i) r.block(o.src, step_of(60), 0);
         // the region narrows: the owner moved the start up; same data, same generation
@@ -283,6 +295,123 @@ int main(int argc, char** argv) {
             std::free(heap);
         }
         std::printf("reader: 4 good files, every cut of them, 20000 random files\n");
+    }
+
+    // ---- shape, reverse and the two random values
+    {
+        // one grain at a time over a constant sample: the output is the window itself, so its edges and steps show
+        std::vector<short> dc(66150, 20000);
+        const int shapes[] = { -100, -50, 0, 50, 100 }, sizes[] = { 0, 20, 50, 80, 100 };
+        double worst = 0; int runs = 0;
+        for (int sh : shapes) for (int sz : sizes) for (u32 rev = 0; rev <= 100; rev += 100) {
+            Owned o; o.set(dc, 0, 0, 66150);
+            Run r; r.set = { MODE_CLASSIC, 0, sh, rev, 0, 0 };
+            const int v[VALUES] = { 500, sz, 0, 0, 0, 0, 0, 80 };          // density 0: grains never overlap
+            std::memcpy(r.values, v, sizeof v);
+            play(r, o.src, 60, BLOCKS_PER_S, BLOCKS_PER_S / 2);
+            int pk = 0, jump = 0, zeros = 0;
+            for (size_t i = 0; i < r.wav.size(); i += 2) {
+                const int x = r.wav[i], before = i ? r.wav[i - 2] : 0;
+                pk = std::max(pk, std::abs(x)); jump = std::max(jump, std::abs(x - before)); zeros += x == 0;
+            }
+            CHECK(pk > 500, "shape %d size %d reverse %u: silent", sh, sz, rev);
+            CHECK(zeros > 0, "shape %d size %d reverse %u: the grains never part", sh, sz, rev);
+            // the steepest a 16-frame raised-cosine edge can be is pi/32 of the top a frame
+            CHECK(jump <= pk * 0.11 + 2, "shape %d size %d reverse %u: a step of %d against a top of %d (a click)", sh, sz, rev, jump, pk);
+            worst = std::max(worst, (double)jump / pk); ++runs;
+        }
+        std::printf("shape: %d runs of single grains, the steepest step %.3f of the top\n", runs, worst);
+
+        // where the top stands: early for a pluck, late for a swell
+        auto top_at = [&](int sh) {
+            Owned o; o.set(dc, 0, 0, 66150);
+            Run r; r.set = { MODE_CLASSIC, 0, sh, 0, 0, 0 };
+            const int v[VALUES] = { 500, 60, 0, 0, 0, 0, 0, 80 };
+            std::memcpy(r.values, v, sizeof v);
+            r.block(o.src, step_of(60), EV_FRESH | EV_BEGINS);
+            for (int i = 0; i < 200; ++i) r.block(o.src, step_of(60), 0);
+            size_t begin, end; first_grain(r.wav, begin, end);
+            size_t top = begin; for (size_t i = begin; i < end; i += 2) if (r.wav[i] > r.wav[top]) top = i;
+            return (double)(top - begin) / (double)(end - begin);
+        };
+        const double tp = top_at(-100), t0 = top_at(0), ts = top_at(100);
+        std::printf("shape: the top at %.3f (pluck), %.3f (0), %.3f (swell) of the grain\n", tp, t0, ts);
+        CHECK(tp < 0.06 && t0 > 0.47 && t0 < 0.53 && ts > 0.94, "the window's top is not where the shape puts it");
+
+        // overlapping grains: the level stays about what the even bell gives, at every density
+        for (int dens : { 30, 60, 100 }) {
+            double mean0 = 0;
+            for (int sh : { 0, -100, -50, 50, 100 }) {
+                Owned o; o.set(dc, 0, 0, 66150);
+                Run r; r.set = { MODE_CLASSIC, 0, sh, 0, 0, 0 };
+                const int v[VALUES] = { 500, 50, dens, 0, 0, 0, 0, 80 };
+                std::memcpy(r.values, v, sizeof v);
+                r.block(o.src, step_of(60), EV_FRESH | EV_BEGINS);
+                for (int i = 0; i < 2 * BLOCKS_PER_S; ++i) r.block(o.src, step_of(60), 0);
+                double sum = 0; int pk = 0, n = 0;
+                for (size_t i = r.wav.size() / 2; i < r.wav.size(); i += 2) { sum += r.wav[i]; pk = std::max(pk, (int)r.wav[i]); ++n; }
+                const double mean = sum / n;
+                if (sh == 0) mean0 = mean;
+                // at the top density more grains are asked for than a voice may hold (4), and which starts are refused
+                // depends on the shape: the level may then differ by the one grain in four
+                const double tol = dens == 100 ? 0.25 : 0.1;
+                CHECK(mean > mean0 * (1 - tol) && mean < mean0 * (1 + tol), "density %d shape %d: mean %.0f, the bell's %.0f", dens, sh, mean, mean0);
+                CHECK(pk < 32000, "density %d shape %d: the sum clips (%d)", dens, sh, pk);
+            }
+        }
+        std::printf("shape: overlapping grains keep the bell's mean level within a tenth (a quarter where the cap of four grains bites)\n");
+
+        // reverse: every read inside the region (the block before `start` and after `end` is not ours: the sanitizer
+        // would stop a read there), at every mode, size, note and scan, mono and stereo, with a region that is not at 0
+        int rruns = 0;
+        for (u32 m = 0; m < MODES; ++m) for (int st = 0; st < 2; ++st) for (int sz : { 0, 50, 100 }) for (int midi : { 24, 60, 96, 108 }) for (u32 rev : { 50u, 100u }) {
+            Owned o; o.set(st ? stereo : mono, st, 1000, 30000);
+            Run r; r.set = { m, 0, (int)(rruns % 5) * 50 - 100, rev, 100, 100 };
+            const int v[VALUES] = { (rruns * 137) % 1001, sz, 100, 100, (rruns % 3 - 1) * 100, 100, 24, 100 };
+            std::memcpy(r.values, v, sizeof v);
+            play(r, o.src, midi, 400, 200, period120);
+            CHECK(r.peak() <= 1.0, "reverse run clips");
+            ++rruns;
+        }
+        // a region shorter than a grain, and one of two frames
+        for (u32 len : { 2u, 3u, 17u, 300u }) for (u32 rev : { 100u }) {
+            Owned o; o.set(mono, 0, 5000, 5000 + len);
+            Run r; r.set = { MODE_CLASSIC, 0, -100, rev, 100, 0 };
+            play(r, o.src, 60, 300, 100);
+            ++rruns;
+        }
+        std::printf("reverse: %d runs, no read outside the region\n", rruns);
+
+        // a reversed grain plays the sample backward: over a rising ramp the output under the window's top falls
+        {
+            std::vector<short> ramp(66150); for (size_t i = 0; i < ramp.size(); ++i) ramp[i] = (short)(2000 + i / 3);
+            auto slope = [&](u32 rev) {
+                Owned o; o.set(ramp, 0, 0, 66150);
+                Run r; r.set = { MODE_CLASSIC, 0, 0, rev, 0, 0 };
+                const int v[VALUES] = { 500, 60, 0, 0, 0, 0, 0, 80 };
+                std::memcpy(r.values, v, sizeof v);
+                r.block(o.src, step_of(60), EV_FRESH | EV_BEGINS);
+                for (int i = 0; i < 300; ++i) r.block(o.src, step_of(60), 0);
+                // compare two points the same way either side of the top of the first grain (its window is even there)
+                size_t begin, end; first_grain(r.wav, begin, end);
+                const size_t mid = (begin + (end - begin) / 2) & ~(size_t)1, q = ((end - begin) / 8) & ~(size_t)1;
+                return (int)r.wav[mid + q] - (int)r.wav[mid - q];
+            };
+            const int f = slope(0), b = slope(100);
+            std::printf("reverse: over a rising ramp the grain's later half is %+d (forward) and %+d (reversed) against its earlier\n", f, b);
+            CHECK(f > 0 && b < 0, "a reversed grain does not read backward");
+        }
+
+        // the two random values: still the same render twice, and the level never above the plain one
+        {
+            Owned o; o.set(mono, 0, 0, 66150);
+            Run a, b, c;
+            a.set = b.set = { MODE_CLASSIC, 0, 0, 30, 100, 100 }; c.set = { MODE_CLASSIC, 0, 0, 0, 0, 0 };
+            play(a, o.src, 60, 600, 200); play(b, o.src, 60, 600, 200); play(c, o.src, 60, 600, 200);
+            CHECK(a.wav == b.wav, "two renders with the random values differ");
+            CHECK(a.wav != c.wav, "the random values change nothing");
+            CHECK(a.peak() <= 1.0 && a.peak() > 0.01, "the random values: peak %.3f", a.peak());
+        }
     }
 
     // ---- the sampler's region, from the fields a probe pack printed on a unit

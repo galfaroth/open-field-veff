@@ -3,11 +3,17 @@
 //   `veffgranular` in the unit's engine list (shift and T1 on a synth sound). Each key plays grains of one sample,
 //   pitched from the note against the sample's root. Three modes: classic (grains at the position), loop (grains
 //   follow a head looping a short region, free or a tempo length) and cloud (randomised dense grains).
-//   Knobs: position, size, density, spray; with shift: scan, spread, tune, volume (the eight engine values, kept with
-//   the sound by the unit). Mode, window, loop length and file number are kept with the sound through level 7
-//   (`veffgranular_set`).
-//   Presses: 1st mode, 2nd window, 3rd loop length, 4th the next file; with shift a press resets scan, spread, tune,
-//   volume.
+//   Knobs: position, size, density, spray; with shift: scan, shape, tune, reverse. Those are the eight engine
+//   values, kept with the sound by the unit and moved by its LFOs (U_* below).
+//   Shift and a press of the 1st knob steps to the second shift page, B: spread, volume, pitch random, level random.
+//   These four, with the mode, the loop length and the file number, are kept with the sound through level 7
+//   (`veffgranular_set`); the pack takes the knobs' turns for them itself.
+//   Presses: 1st mode, 2nd shape back to 0, 3rd loop length, 4th the next file. With shift: 1st the other shift page;
+//   2nd, 3rd, 4th put the page's value back (A: shape, tune, reverse; B: volume, pitch random, level random).
+//
+// Against version 1, values 6 and 8 changed their meaning (they were spread and volume). A sound saved by version 1
+// is told by its level-7 record ("v":1), or, when it has none, by values 6 and 8 standing exactly where version 1's
+// starts put them; its spread and volume are then moved to their new place and shape and reverse set to 0.
 //
 // Where the sample comes from (grain_source.h is the interface; source_for() below is the one place that chooses):
 //   1. the sampler source (the default; a file `sampler.off` in the pack's folder switches it off): the sample the
@@ -37,10 +43,15 @@ enum { BLOCK_LEVEL_9 = 52, FRAME_LEVEL_4 = 40, INPUT_LEVEL_2 = 36 };
 enum { CLICK_FIRST = 54, CLICK_LAST = 57, PRESS_FIRST = 61, PRESS_LAST = 64 };
 enum { SLOTS = 8, VOICES = 6, FILES = 8, MEMORY_BYTES = 4194304, NAMES_ROOM = 1024 };
 static const char LOG_FILE[] = "op1f/veffgranular.cpp";
-static const int VALUE_START[8] = { 250, 50, 50, 10, 0, 30, 0, 80 };   // as the recipe's starts
+enum { U_POS, U_SIZE, U_DENSITY, U_SPRAY, U_SCAN, U_SHAPE, U_TUNE, U_REVERSE };   // the engine's eight values
+static const int VALUE_START[8] = { 250, 50, 50, 10, 0, 0, 0, 0 };     // as the recipe's starts
+enum { X_SPREAD, X_VOLUME, X_PITCH_RANDOM, X_LEVEL_RANDOM, EXTRAS };   // page B, kept through level 7
+static const int EXTRA_START[EXTRAS] = { 30, 80, 0, 0 };
 
 // ---------------------------------------------------------------- shared between the threads (single words)
-static volatile u32 set_mode[SLOTS], set_window[SLOTS], set_loop[SLOTS], set_file[SLOTS];   // kept values
+static volatile u32 set_mode[SLOTS], set_loop[SLOTS], set_file[SLOTS];   // kept values
+static volatile int set_extra[SLOTS][EXTRAS];         // spread, volume, pitch random, level random: 0..100
+static volatile u32 shift_page;                       // 0: A (the unit's values), 1: B (ours)
 static volatile u32 playing_slot;                     // the slot the render last played, + 1 (0: none yet)
 static volatile u32 file_loaded;                      // the file number in file_src, 1..8, or 0
 static volatile u32 sampler_on = 1;                   // the sampler source is on unless a file sampler.off says no
@@ -93,10 +104,18 @@ extern "C" void veffgranular_render(const Op1fVoiceBlock* now) {
     s.valid = from->valid;
     s.data = from->data; s.frames = from->frames; s.stereo = from->stereo; s.start = from->start; s.end = from->end;
     s.root = from->root; s.rate_q16 = from->rate_q16; s.generation = from->generation;
+    // the render's eight numbers: six of the unit's, and spread and volume from page B
+    const int* u = now->values;
+    int vals[gran::VALUES];
+    vals[gran::V_POS] = u[U_POS]; vals[gran::V_SIZE] = u[U_SIZE]; vals[gran::V_DENSITY] = u[U_DENSITY]; vals[gran::V_SPRAY] = u[U_SPRAY];
+    vals[gran::V_SCAN] = u[U_SCAN]; vals[gran::V_TUNE] = u[U_TUNE];
+    vals[gran::V_SPREAD] = set_extra[slot][X_SPREAD]; vals[gran::V_VOLUME] = set_extra[slot][X_VOLUME];
     gran::Settings set;
-    set.mode = set_mode[slot]; set.window = set_window[slot]; set.loop = set_loop[slot];
+    set.mode = set_mode[slot]; set.loop = set_loop[slot];
+    set.shape = u[U_SHAPE]; set.reverse = (u32)(u[U_REVERSE] < 0 ? 0 : u[U_REVERSE]);
+    set.pitch_random = (u32)set_extra[slot][X_PITCH_RANDOM]; set.level_random = (u32)set_extra[slot][X_LEVEL_RANDOM];
     gran::Block b;
-    b.values = now->values; b.step = now->step; b.period = now->period; b.voice = now->voice; b.out = out;
+    b.values = vals; b.step = now->step; b.period = now->period; b.voice = now->voice; b.out = out;
     b.events = ((now->events & (u32)OP1F_VOICE_BEGINS) ? (u32)gran::EV_BEGINS : 0u) |
                ((now->events & (u32)OP1F_VOICE_ENDS) ? (u32)gran::EV_ENDS : 0u) |
                ((now->events & (u32)OP1F_VOICE_FRESH) ? (u32)gran::EV_FRESH : 0u);
@@ -290,32 +309,63 @@ static int read_member(const char* t, char name, int* out) {
     return 0;
 }
 static void kept_read(u32 slot) {
-    char text[96];
-    set_mode[slot] = 0; set_window[slot] = 0; set_loop[slot] = 0; set_file[slot] = 1;
+    char text[128];
+    set_mode[slot] = 0; set_loop[slot] = 0; set_file[slot] = 1;
+    for (int e = 0; e < EXTRAS; ++e) set_extra[slot][e] = EXTRA_START[e];
+    int version = 0;
     if (op1f_value_get(CARD, OP1F_KEEP_SYNTH, slot, KEY, text, sizeof text) > 0) {
         int v;
         if (read_member(text, 'm', &v)) set_mode[slot] = (u32)held(v, 0, gran::MODES - 1);
-        if (read_member(text, 'w', &v)) set_window[slot] = (u32)held(v, 0, WINDOW_SHAPES - 1);
         if (read_member(text, 'l', &v)) set_loop[slot] = (u32)held(v, 0, gran::LOOPS - 1);
         if (read_member(text, 'f', &v)) set_file[slot] = (u32)held(v, 1, FILES);
+        if (read_member(text, 'd', &v)) set_extra[slot][X_SPREAD] = held(v, 0, 100);
+        if (read_member(text, 'o', &v)) set_extra[slot][X_VOLUME] = held(v, 0, 100);
+        if (read_member(text, 'p', &v)) set_extra[slot][X_PITCH_RANDOM] = held(v, 0, 100);
+        if (read_member(text, 'a', &v)) set_extra[slot][X_LEVEL_RANDOM] = held(v, 0, 100);
+        if (read_member(text, 'v', &v)) version = v;
+    }
+    if (version < 2) {
+        // No record of ours, or version 1's. Version 1 kept spread as value 6 (0..100) and volume as value 8: read as
+        // this version's shape (-100..100) and reverse (0..100) they stand at 2 * spread - 100 and at the volume.
+        int shape = 0, reverse = 0;
+        const int got = op1f_param_get(CARD, ASK_ENGINE, slot, U_SHAPE, &shape) == 0 && op1f_param_get(CARD, ASK_ENGINE, slot, U_REVERSE, &reverse) == 0;
+        const int v1_starts = shape == -40 && reverse == 80;             // spread 30 and volume 80, version 1's starts
+        if (got && (version == 1 || v1_starts)) {
+            set_extra[slot][X_SPREAD] = held((shape + 100) >> 1, 0, 100);
+            set_extra[slot][X_VOLUME] = held(reverse, 0, 100);
+            op1f_param_set(CARD, ASK_ENGINE, slot, U_SHAPE, 0);
+            op1f_param_set(CARD, ASK_ENGINE, slot, U_REVERSE, 0);
+            op1f_log(3, LOG_FILE, 9, "veffgranular: synth %u holds a sound of version 1 (%s): spread %d and volume %d moved to page B, shape and reverse 0",
+                     slot + 1, version == 1 ? "its record" : "its values", (int)set_extra[slot][X_SPREAD], (int)set_extra[slot][X_VOLUME]);
+        }
+        unsaved |= 1u << slot;                                           // from now on the sound carries a record of version 2
     }
     ready |= 1u << slot;
 }
-static void kept_write(u32 slot) {                    // {"m":0,"w":0,"l":0,"f":1,"v":1}
-    char text[64], * q = text;
+static void kept_write(u32 slot) {                    // {"m":0,"l":0,"f":1,"d":30,"o":80,"p":0,"a":0,"v":2}
+    char text[96], * q = text;
     q = put(q, "{\"m\":"); q = put_number(q, (int)set_mode[slot]);
-    q = put(q, ",\"w\":"); q = put_number(q, (int)set_window[slot]);
     q = put(q, ",\"l\":"); q = put_number(q, (int)set_loop[slot]);
     q = put(q, ",\"f\":"); q = put_number(q, (int)set_file[slot]);
-    put(q, ",\"v\":1}");
+    q = put(q, ",\"d\":"); q = put_number(q, (int)set_extra[slot][X_SPREAD]);
+    q = put(q, ",\"o\":"); q = put_number(q, (int)set_extra[slot][X_VOLUME]);
+    q = put(q, ",\"p\":"); q = put_number(q, (int)set_extra[slot][X_PITCH_RANDOM]);
+    q = put(q, ",\"a\":"); q = put_number(q, (int)set_extra[slot][X_LEVEL_RANDOM]);
+    put(q, ",\"v\":2}");
     if (op1f_value_set(CARD, OP1F_KEEP_SYNTH, slot, KEY, text) == 0) unsaved &= ~(1u << slot);
 }
 
 // ---------------------------------------------------------------- the keys (input thread)
 static volatile u32 pending_click;                    // bits 0..3 presses, 4..7 presses with shift
+static volatile int pending_turn[4];                  // page B's turns, in notches
 extern "C" int veffgranular_input(const Op1fInput* e) OP1F_NAMED("veffgranular_input");
 extern "C" int veffgranular_input(const Op1fInput* e) {
     if (e->bytes < (u32)INPUT_LEVEL_2 || !e->mine) return 0;
+    if (e->what == (u32)OP1F_TURN && e->key < 4u && e->shift && shift_page) {      // page B's values are ours to turn
+        const int steps = e->turn >> 10;
+        if (steps) pending_turn[e->key] += steps;
+        return 1;
+    }
     if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && e->key >= (u32)CLICK_FIRST && e->key <= (u32)CLICK_LAST) {
         const u32 knob = e->key - (u32)CLICK_FIRST;
         pending_click |= (e->what == (u32)OP1F_DOWN_SHIFT || e->shift) ? 16u << knob : 1u << knob;
@@ -328,7 +378,6 @@ extern "C" int veffgranular_input(const Op1fInput* e) {
 // ---------------------------------------------------------------- the page
 using namespace veffui;
 static const char* const MODE_NAMES[gran::MODES] = { "CLASSIC", "LOOP", "CLOUD" };
-static const char* const WINDOW_NAMES[WINDOW_SHAPES] = { "SOFT", "FLAT", "PLUCK", "TRI" };
 static const char* const LOOP_NAMES[gran::LOOPS] = { "FREE", "1/16", "1/8", "1/4", "1/2", "1 BAR", "2 BARS" };
 
 static void icon_grains(void* c) {                    // three grains: little windows over a line
@@ -351,9 +400,14 @@ static void paint_art(void* c, u32 where, const GrainSource& s, int values[8], i
     if (sampler_on && sampler_src[slot].valid) { q = put(q, "SAMPLER "); q = put_number(q, (int)slot + 1); }
     else if (file_loaded && set_file[slot] == file_loaded) q = put(q, files.name);
     else { q = put(q, "FILE "); q = put_number(q, (int)set_file[slot]); }
-    q = put(q, "  "); q = put(q, WINDOW_NAMES[set_window[slot] & 3u]);
     if (set_mode[slot] == gran::MODE_LOOP) { q = put(q, "  "); q = put(q, LOOP_NAMES[held((int)set_loop[slot], 0, gran::LOOPS - 1)]); }
-    text(c, VEFF_AXIS_R - text_width(line, 2, 1), VEFF_ART_TOP - 2, line, VEFF_GREY, 2, 1);
+    if (values[U_REVERSE] > 0) { q = put(q, "  REV"); }
+    text(c, VEFF_AXIS_R - 30 - text_width(line, 2, 1), VEFF_ART_TOP - 2, line, VEFF_GREY, 2, 1);
+    {   // the grain's shape: where its top stands
+        const int gx = VEFF_AXIS_R - 24, gy = VEFF_ART_TOP - 2, top = (SHAPE_TOP[held(values[U_SHAPE], -100, 100) + 100] * 24) >> 8;
+        op1f_paint_line(c, gx, gy + 10, gx + top, gy, 1, on ? VEFF_PINK : VEFF_GREY);
+        op1f_paint_line(c, gx + top, gy, gx + 24, gy + 10, 1, on ? VEFF_PINK : VEFF_GREY);
+    }
     if (!grain_source_ok(s)) {
         axis(c, VEFF_DARK);
         q = line;
@@ -390,7 +444,11 @@ static void paint_art(void* c, u32 where, const GrainSource& s, int values[8], i
         if (pos < s.start || pos >= s.end) continue;
         const int x = L + (int)gran::mul_shift(gran::mul_shift(pos - s.start, xs, 0), (u32)W, 32);
         const int h = 4 + (int)((lv * 44u) >> 15);
-        op1f_paint_box(c, x - 1, Y - h, 3, 2 * h + 1, on ? pink(256) : VEFF_GREY);
+        const unsigned colour = on ? pink(256) : VEFF_GREY;
+        if (vis[v].rev[k]) {                           // a grain read backward: hollow
+            op1f_paint_box(c, x - 1, Y - h, 1, 2 * h + 1, colour); op1f_paint_box(c, x + 1, Y - h, 1, 2 * h + 1, colour);
+            op1f_paint_box(c, x - 1, Y - h, 3, 1, colour); op1f_paint_box(c, x - 1, Y + h, 3, 1, colour);
+        } else op1f_paint_box(c, x - 1, Y - h, 3, 2 * h + 1, colour);
         sparkle(c, x, Y - h - 4, 3, VEFF_WHITE);
     }
 }
@@ -419,18 +477,25 @@ static void paint(void* c, u32 where, u32 how, int shift) {
         col[1] = { "SIZE", t[1], (held(v[1], 0, 100) * 10486) >> 10 };
         col[2] = { "DENSITY", t[2], (held(v[2], 0, 100) * 10486) >> 10 };
         col[3] = { "SPRAY", t[3], (held(v[3], 0, 100) * 10486) >> 10 };
-    } else {
-        { const int sc = held(v[4], -100, 100); char* q = t[0];                 // -2.0x .. +2.0x
+    } else if (!shift_page) {
+        { const int sc = held(v[U_SCAN], -100, 100); char* q = t[0];            // -2.0x .. +2.0x
           *q++ = sc > 0 ? '+' : sc < 0 ? '-' : ' '; q = put_tenths(q, ((sc < 0 ? -sc : sc) * 13107) >> 16); put(q, "X"); }
-        { char* q = put_number(t[1], held(v[5], 0, 100)); put(q, "%"); }
-        { const int tu = held(v[6], -24, 24); char* q = t[2]; if (tu > 0) *q++ = '+'; q = put_number(q, tu); put(q, "ST"); }
-        { char* q = put_number(t[3], held(v[7], 0, 100)); put(q, "%"); }
-        col[0] = { "SCAN", t[0], ((held(v[4], -100, 100) + 100) * 5243) >> 10 };
-        col[1] = { "SPREAD", t[1], (held(v[5], 0, 100) * 10486) >> 10 };
-        col[2] = { "TUNE", t[2], ((held(v[6], -24, 24) + 24) * 21845) >> 10 };
-        col[3] = { "VOLUME", t[3], (held(v[7], 0, 100) * 10486) >> 10 };
+        { const int sh = held(v[U_SHAPE], -100, 100); char* q = t[1]; if (sh > 0) *q++ = '+'; put_number(q, sh); }
+        { const int tu = held(v[U_TUNE], -24, 24); char* q = t[2]; if (tu > 0) *q++ = '+'; q = put_number(q, tu); put(q, "ST"); }
+        { char* q = put_number(t[3], held(v[U_REVERSE], 0, 100)); put(q, "%"); }
+        col[0] = { "SCAN", t[0], ((held(v[U_SCAN], -100, 100) + 100) * 5243) >> 10 };
+        col[1] = { "SHAPE", t[1], ((held(v[U_SHAPE], -100, 100) + 100) * 5243) >> 10 };
+        col[2] = { "TUNE", t[2], ((held(v[U_TUNE], -24, 24) + 24) * 21845) >> 10 };
+        col[3] = { "REVERSE", t[3], (held(v[U_REVERSE], 0, 100) * 10486) >> 10 };
+    } else {
+        static const char* const NAMES[EXTRAS] = { "SPREAD", "VOLUME", "P RAND", "L RAND" };
+        for (int e = 0; e < EXTRAS; ++e) {
+            const int x = held((int)set_extra[where & 7u][e], 0, 100);
+            char* q = put_number(t[e], x); put(q, "%");
+            col[e] = { NAMES[e], t[e], (x * 10486) >> 10 };
+        }
     }
-    page(c, "GRANULAR", 99, col, shift ? "SHIFT" : MODE_NAMES[held((int)set_mode[where & 7u], 0, gran::MODES - 1)], on);
+    page(c, "GRANULAR", 99, col, shift ? (shift_page ? "SHIFT B" : "SHIFT A") : MODE_NAMES[held((int)set_mode[where & 7u], 0, gran::MODES - 1)], on);
     icon_grains(c);
     if (how & (u32)OP1F_SHOWN_OFF) text(c, VEFF_MID_X - 40, VEFF_ART_BOTTOM - 20, "SWITCHED OFF", VEFF_PINK, 2, 2);
 }
@@ -447,7 +512,7 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
     }
     if (!fr.started) {
         fr.started = 1;
-        for (u32 p = 0; p < (u32)SLOTS; ++p) { set_file[p] = 1; }
+        for (u32 p = 0; p < (u32)SLOTS; ++p) { set_file[p] = 1; for (int e = 0; e < EXTRAS; ++e) set_extra[p][e] = EXTRA_START[e]; }
         op1f_log(3, LOG_FILE, 8, "veffgranular: ready; the synth sampler's sample of each slot, else files 1..8 in the folder veffgranular; sampler.off there switches the sampler source off");
     }
     // the kept values of every sound that rides the engine
@@ -476,14 +541,28 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
     }
     // presses
     if (how & (u32)OP1F_SHOWN_UP) {
+        for (int k = 0; k < 4; ++k) {                 // page B's turns: two of a hundred a notch
+            const int t = pending_turn[k];
+            if (!t) continue;
+            pending_turn[k] -= t;
+            set_extra[where][k] = held((int)set_extra[where][k] + 2 * t, 0, 100);
+            unsaved |= 1u << where;
+        }
         const u32 clicks = pending_click;
         pending_click &= ~clicks;
         if (clicks & 1u) { set_mode[where] = set_mode[where] + 1u >= (u32)gran::MODES ? 0u : set_mode[where] + 1u; unsaved |= 1u << where; }
-        if (clicks & 2u) { set_window[where] = set_window[where] + 1u >= (u32)WINDOW_SHAPES ? 0u : set_window[where] + 1u; unsaved |= 1u << where; }
+        if (clicks & 2u) op1f_param_set(CARD, ASK_ENGINE, where, U_SHAPE, 0);
         if (clicks & 4u) { set_loop[where] = set_loop[where] + 1u >= (u32)gran::LOOPS ? 0u : set_loop[where] + 1u; unsaved |= 1u << where; }
         if (clicks & 8u) { set_file[where] = set_file[where] >= (u32)FILES ? 1u : set_file[where] + 1u; unsaved |= 1u << where; }
-        for (u32 k = 0; k < 4u; ++k) if (clicks >> (4u + k) & 1u) op1f_param_set(CARD, ASK_ENGINE, where, 4u + k, VALUE_START[4u + k]);
-    } else pending_click = 0;
+        if (clicks & 16u) shift_page = !shift_page;   // shift and the 1st knob's press: the other shift page
+        if (!shift_page) {                            // with shift, a press puts page A's value back
+            static const u32 WHICH[3] = { U_SHAPE, U_TUNE, U_REVERSE };
+            for (u32 k = 0; k < 3u; ++k) if (clicks >> (5u + k) & 1u) op1f_param_set(CARD, ASK_ENGINE, where, WHICH[k], VALUE_START[WHICH[k]]);
+        } else {                                      // or page B's
+            static const u32 WHICH[3] = { X_VOLUME, X_PITCH_RANDOM, X_LEVEL_RANDOM };
+            for (u32 k = 0; k < 3u; ++k) if (clicks >> (5u + k) & 1u) { set_extra[where][WHICH[k]] = EXTRA_START[WHICH[k]]; unsaved |= 1u << where; }
+        }
+    } else { pending_click = 0; for (int k = 0; k < 4; ++k) pending_turn[k] = 0; }
     for (u32 p = 0; p < (u32)SLOTS; ++p) if (unsaved >> p & 1u) kept_write(p);
     if (now->page == CARD && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP)) paint(now->canvas, where, how, now->shift != 0);
 }

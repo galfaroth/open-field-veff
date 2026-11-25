@@ -2,7 +2,8 @@
 // the unit (veffgranular.cpp) and on a computer (tests/host_test.cpp).
 //
 // One voice is up to GRAINS grains. A grain reads the sample (through a GrainSource, grain_source.h) from a start
-// frame forward at the note's speed, linearly interpolated, under a window from a table, and pans left/right.
+// frame at the note's speed, forward or (by the reverse chance) backward, linearly interpolated, under a window
+// from a table whose top the shape moves (a pluck, a bell, a swell), and pans left/right.
 // Grains start every `interval` output frames (size / overlap); where depends on the mode:
 //   classic  the position (+ scan's drift) plus a random spray
 //   loop     a play head that runs through a short region from the position and wraps; grains start at the head
@@ -20,7 +21,7 @@ namespace gran {
 typedef unsigned u32;
 typedef int i32;
 
-enum { FRAMES = 128, GRAINS = 4, TAIL_FRAMES = 64, MIN_INTERVAL = 64 };
+enum { FRAMES = 128, GRAINS = 4, TAIL_FRAMES = 64, MIN_INTERVAL = 64, WINDOW_EDGE_FRAMES = 16 };
 // The cost cap: grains sounding at once in a voice, by the source's channels. Each grain-frame costs some 60
 // instructions (stereo) or 45 (mono) on the unit plus its reads of the sample in DDR; 3 x 128 and 4 x 128 grain-frames
 // are the most a render does. Lower these first if the unit's log shows renders over the declared cost.
@@ -33,7 +34,12 @@ enum { EV_BEGINS = 1, EV_ENDS = 2, EV_FRESH = 4 };   // mapped from the base's b
 enum { HOLD_BLOCKS = 6891 };
 static const u32 MAX_INC = 8u << 16;                  // 8 source frames an output frame at most
 
-struct Settings { u32 mode, window, loop; };          // the values beyond the knobs (kept with the sound)
+// The values beyond the eight in Block.values:
+//   shape    -100 a pluck (the window's top at 1/32 of the grain), 0 the even bell, +100 a swell (the top at 31/32)
+//   reverse  0..100: the chance, in percent, that a grain plays backward
+//   pitch_random  0..100: each grain's pitch moved by a random part of +-12 semitones
+//   level_random  0..100: each grain's level lowered by a random part of this much
+struct Settings { u32 mode, loop; i32 shape; u32 reverse, pitch_random, level_random; };
 
 struct Block {
     const int* values;   // VALUES numbers in the recipe's ranges
@@ -47,8 +53,9 @@ struct Block {
 struct Grain {
     u32 pos, frac;       // whole frame, and the fraction Q16
     u32 inc;             // source frames an output frame, Q16
-    u32 wphase, wstep;   // window phase over 2^32; wstep 0 marks a free grain
-    u32 woff;            // the window's first point in WINDOW
+    u32 wphase, wstep;   // window phase over 2^32, and its step over the fall; wstep 0 marks a free grain
+    u32 wrise;           // its step over the rise (the phase below 2^31)
+    u32 rev;             // 1: it reads backward
     i32 gl, gr;          // gains Q15 (pan, overlap and volume)
     i32 last_l, last_r;  // the last frame it added, for the fade when it is dropped
 };
@@ -63,7 +70,7 @@ struct Voice {
 };
 
 // what the page draws: written by the render, one word each, read by the frame function
-struct Vis { u32 pos[GRAINS]; u32 level[GRAINS]; };
+struct Vis { u32 pos[GRAINS]; u32 level[GRAINS]; u32 rev[GRAINS]; };
 
 // (a * b) >> shift of the full 64-bit product, in 16-bit limbs (no 64-bit multiply on the unit)
 static inline u32 mul_shift(u32 a, u32 b, unsigned shift) {
@@ -118,7 +125,9 @@ struct Plan {
     u32 start, end, len;          // region
     u32 inc;                      // Q16 at the note, before a grain's detune
     i32 off64;                    // root and tune, 64ths of a semitone
-    u32 size, mode, woff;
+    u32 size, mode;
+    u32 ka, kd;                   // the shape: the window's step over its rise and its fall, times wstep, Q11
+    u32 reverse, pitch_random, level_random;
     u32 interval;
     i32 gain;                     // Q15
     u32 spray;                    // frames either side
@@ -145,33 +154,45 @@ static inline void spawn(Voice& v, const Plan& p) {
     if (p.mode == MODE_CLOUD) sz = clampi(sz + (int)(rnd(v) >> 27) - 16, 0, 100);
     // detune between grains: a quarter semitone at spread 100 (a whole one in cloud)
     const i32 d = ((i32)(rnd(v) >> 16) - 32768) * p.spread;               // +-3,276,800
-    const i32 detune = p.mode == MODE_CLOUD ? (d * 5) >> 18 : (d * 5) >> 20;
+    i32 detune = p.mode == MODE_CLOUD ? (d * 5) >> 18 : (d * 5) >> 20;
+    if (p.pitch_random) detune += ((((i32)(rnd(v) >> 16) - 32768) * (i32)p.pitch_random) * 15) >> 16;   // +-750 64ths at 100
     const u32 inc = pitch(p.inc, p.off64 + detune);
     u32 wstep = SIZE_WSTEP[sz];
-    u32 span = mul_shift(SIZE_FRAMES[sz], inc, 16) + 2u;
+    // the frames it will read: its length, and a little more for the shaped window's rounding and its least edges
+    u32 span = mul_shift(SIZE_FRAMES[sz] + (SIZE_FRAMES[sz] >> 10) + 2u * (u32)WINDOW_EDGE_FRAMES, inc, 16) + 2u;
     while (span >= p.len && wstep < 0x40000000u) { wstep <<= 1; span = (span >> 1) + 1u; }   // a sample shorter than a grain
     u32 at = p.start + rel;
     if (span < p.len) { if (at + span >= p.end) at = p.end - 1u - span; }
     else at = p.start;
     i32 pan = 0;
     if (p.spread) pan = (((i32)(rnd(v) >> 17) - 16384) * (p.spread * 327)) >> 14;   // +-32700
-    g->pos = at; g->frac = 0; g->inc = inc;
-    g->wphase = 0; g->wstep = wstep; g->woff = p.woff;
-    g->gl = (p.gain * (pan > 0 ? 32767 - pan : 32767)) >> 15;
-    g->gr = (p.gain * (pan < 0 ? 32767 + pan : 32767)) >> 15;
+    i32 gain = p.gain;
+    if (p.level_random) gain = (gain * (32768 - (i32)(((rnd(v) >> 17) * (p.level_random * 327u)) >> 15))) >> 15;
+    const u32 rev = p.reverse && (((rnd(v) >> 16) * 100u) >> 16) < p.reverse ? 1u : 0u;
+    // a grain read backward starts at the far end of the same span and comes down to its start
+    g->pos = rev ? (span < p.len ? at + span - 1u : p.end - 2u) : at;
+    g->frac = 0; g->inc = inc; g->rev = rev;
+    // the window: the rise and the fall each at their own step, neither under WINDOW_EDGE_FRAMES frames (no click)
+    u32 wa = mul_shift(wstep, p.ka, 11), wd = mul_shift(wstep, p.kd, 11);
+    const u32 most = 0x80000000u / (u32)WINDOW_EDGE_FRAMES;
+    if (wa > most) wa = most;
+    if (wd > most) wd = most;
+    if (!wd) wd = 1u;
+    if (!wa) wa = 1u;
+    g->wphase = 0; g->wstep = wd; g->wrise = wa;
+    g->gl = (gain * (pan > 0 ? 32767 - pan : 32767)) >> 15;
+    g->gr = (gain * (pan < 0 ? 32767 + pan : 32767)) >> 15;
     g->last_l = g->last_r = 0;
 }
 
-template <int STEREO>
-static inline void mix(Voice& v, const GrainSource& s, i32* out, u32 count) {
-    const short* data = s.data;
-    const u32 start = s.start, last = s.end - 1u;     // a read of pos and pos + 1 needs pos < last
-    for (int k = 0; k < GRAINS; ++k) {
-        Grain& g = v.g[k];
-        if (!g.wstep) continue;
+// One grain for `count` frames. REV: it reads backward (pos falls; a pos that passes 0 wraps above `last` and the
+// same check drops the grain).
+template <int STEREO, int REV>
+static inline void mix_grain(Voice& v, Grain& g, const short* data, u32 start, u32 last, i32* out, u32 count) {
+    {
         u32 pos = g.pos, frac = g.frac, ph = g.wphase;
-        const u32 ii = g.inc >> 16, fi = g.inc & 0xffffu, ws = g.wstep;
-        const unsigned short* win = WINDOW + g.woff;
+        const u32 ii = g.inc >> 16, fi = g.inc & 0xffffu, ws = g.wstep, wr = g.wrise;
+        const unsigned short* win = WINDOW;
         const i32 gl = g.gl, gr = g.gr;
         i32 cl = g.last_l, cr = g.last_r;
         i32* o = out;
@@ -192,14 +213,28 @@ static inline void mix(Voice& v, const GrainSource& s, i32* out, u32 count) {
             cl = (l * ((w * gl) >> 15)) >> 3;
             cr = (r * ((w * gr) >> 15)) >> 3;
             o[0] += cl; o[1] += cr; o += 2;
-            frac += fi;
-            pos += ii + (frac >> 16);
-            frac &= 0xffffu;
-            const u32 nph = ph + ws;
+            if (REV) {
+                if (frac < fi) { frac += 0x10000u - fi; pos -= ii + 1u; } else { frac -= fi; pos -= ii; }
+            } else {
+                frac += fi;
+                pos += ii + (frac >> 16);
+                frac &= 0xffffu;
+            }
+            const u32 nph = ph + (ph < 0x80000000u ? wr : ws);
             if (nph < ph) { g.wstep = 0; cl = cr = 0; break; }               // the window ended at 0
             ph = nph;
         }
         if (g.wstep) { g.pos = pos; g.frac = frac; g.wphase = ph; g.last_l = cl; g.last_r = cr; }
+    }
+}
+template <int STEREO>
+static inline void mix(Voice& v, const GrainSource& s, i32* out, u32 count) {
+    const u32 start = s.start, last = s.end - 1u;     // a read of pos and pos + 1 needs pos < last
+    for (int k = 0; k < GRAINS; ++k) {
+        Grain& g = v.g[k];
+        if (!g.wstep) continue;
+        if (g.rev) mix_grain<STEREO, 1>(v, g, s.data, start, last, out, count);
+        else mix_grain<STEREO, 0>(v, g, s.data, start, last, out, count);
     }
 }
 
@@ -225,7 +260,10 @@ static inline void render(Voice& v, const GrainSource& src, const Settings& set,
         p.start = src.start; p.end = src.end; p.len = src.end - src.start;
         p.mode = set.mode < (u32)MODES ? set.mode : 0u;
         p.active_most = src.stereo ? (u32)ACTIVE_MOST_STEREO : (u32)ACTIVE_MOST_MONO;
-        p.woff = (set.window < (u32)WINDOW_SHAPES ? set.window : 0u) * (u32)WINDOW_POINTS;
+        { const int sh = clampi(set.shape, -100, 100) + 100; p.ka = SHAPE_KA_Q11[sh]; p.kd = SHAPE_KD_Q11[sh]; }
+        p.reverse = set.reverse > 100u ? 100u : set.reverse;
+        p.pitch_random = set.pitch_random > 100u ? 100u : set.pitch_random;
+        p.level_random = set.level_random > 100u ? 100u : set.level_random;
         p.size = (u32)clampi(val[V_SIZE], 0, 100);
         const int dens = clampi(val[V_DENSITY], 0, 100);
         const int vol = clampi(val[V_VOLUME], 0, 100);
@@ -308,7 +346,8 @@ static inline void render(Voice& v, const GrainSource& src, const Settings& set,
     if (vis) for (int k = 0; k < GRAINS; ++k) {
         const Grain& g = v.g[k];
         vis->pos[k] = g.pos;
-        vis->level[k] = g.wstep ? WINDOW[g.woff + (g.wphase >> 22)] + 1u : 0u;
+        vis->level[k] = g.wstep ? WINDOW[g.wphase >> 22] + 1u : 0u;
+        vis->rev[k] = g.rev;
     }
 }
 
