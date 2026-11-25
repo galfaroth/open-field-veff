@@ -193,3 +193,55 @@ What version 4 does differently:
 length, the line `veffgranular: sampler source of synth <n>: frames 0 to <length> of ..., a drop of our own` follows,
 and the page shows the cut. `THE POOL IS AS IT WAS` with a clipboard that is not silent would mean the import does
 refuse us after all, by a test not found in this reading.
+
+# Version 4 froze a unit at its start; version 5
+
+Version 3 was then shown to work on the unit: on a slot that had held a sampler sound, the drop key on the page put
+the lifted cut into the slot and the engine played it. So the call from the frame function does the work, as read.
+
+Version 4, put on the same unit, left it frozen right after the start screen, twice, with log files of 0 bytes.
+Version 3 put back started well.
+
+**What was looked for in version 4, and what was found:**
+
+- Its new search for the end of a pool's sound was counted on a computer for that unit's slots: 1,252 words for the
+  slot holding version 3's cut, 16,570 for a silent mono slot, 33,184 for each of two silent stereo slots, 14 for a
+  full one, 5,547 for the mono one; some 90,000 words in all, spread over the first eight frames, 34,600 in the
+  worst of them. That is slow for a frame and not a freeze.
+- Version 4's own source was run on a computer against that unit's state, the firmware's addresses mapped for
+  real (the slot table, the eight objects, the pools as the log described them), for 3,000 frames with a watchdog:
+  every slot settles in the first eight frames, ten lines are logged, nothing loops, no line is longer than the
+  log takes.
+- No loop of the pack's was found that could fail to end: the search's place only falls, the 40-frames-later line
+  counts down once, `dropkey.txt` is read into sixteen bytes.
+
+**So the freeze is not explained by the pack's own code.** Two things changed with version 4 besides it: the pack
+grew, and with it the unit left `wagons` out for want of room ("1 left out") while trains of `fx train` held effects
+of that pack; and slot 1 held a cut for the first time at a start. Either could be the cause and neither is shown.
+To tell them apart: a start with version 3 and `wagons` taken off the unit on purpose. If that freezes, it was never
+this pack's code.
+
+**What version 5 does all the same:**
+
+- **A budget for every frame.** The search reads at most 4,096 words of one slot's pool a frame and goes on in the
+  next (`sampler_scan.h`); the cheap sum is 76 words a slot looked at, two slots a frame. On that unit's state a
+  computer counts 1,404 words in the worst frame. A slot plays and shows nothing until its search is over.
+- **Mostly no search at all.** After a drop of our own the length is the clipboard's at the call. A slot loaded from
+  a file ends where the sampler's own count says. A slot whose cheap sum is that of silence is empty. Only a slot
+  never loaded that holds sound is searched.
+- **A drop that would be rendered past the pool is refused** (reason 8). A slot never loaded says it may hold 264,608
+  frames, eight more than a stereo pool has room for, so a stereo cut of more than 264,600 frames (6 s) would be
+  written 32 bytes past the pool by the firmware's own render. Lift less than six seconds for such a slot.
+- **Smaller.** Everything but the render is now built for size, and the log's lines are short: 33,464 bytes of body
+  and 4,628 zeroed (38,092 on the unit) against version 3's 36,756 and 4,188 (40,944) and version 4's 38,968 and
+  4,328 (43,296). Nothing was taken out: the file source reads every format it did.
+- **Two lines that say how far a start got:** `veffgranular: v5 start` at the first frame call, before anything
+  else, and `veffgranular: v5 first scan done: synth <n>, end <frame>, <k> frame(s)` (only when a slot needed a
+  search). `veffgranular: <n> scan(s), at most <w> words a frame` follows now and then.
+- The call of the import, its argument, its thread and its other checks are version 3's, unchanged.
+
+The log's lines of a drop, now short: `drop> synth <n> obj <a> f<frames> w<words> st<stereo> k<kind> x <three words>
+sum <s> clip <frames> t<tracks> o<other> q<read>/<write>` before; `drop< <answer> f.. w.. st.. x .. sum <s>
+changed <0/1> ours <frames> q../..; <d> done <r> refused` after; `drop+40 synth <n> w.. sum .. same <0/1> q../..`
+forty frames on. **It worked** when `changed 1` and `ours` is the clipboard's length, and the line
+`veffgranular: synth <n>: sampler frames 0..<length>, ..., ours <length>` stands between the two.

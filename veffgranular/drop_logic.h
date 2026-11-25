@@ -11,7 +11,7 @@ enum { FADE_FRAMES = 3 };        // frames between silencing the slot and the ca
 enum { MESSAGE_FRAMES = 90 };
 
 // why a drop is refused; the page shows the number
-enum { OK = 0, R_SITE = 1, R_NOT_OURS = 2, R_DISK = 3, R_CHAIN = 4, R_NOTHING = 5, R_TRACKS = 6, R_WORKER = 7 };
+enum { OK = 0, R_SITE = 1, R_NOT_OURS = 2, R_DISK = 3, R_CHAIN = 4, R_NOTHING = 5, R_TRACKS = 6, R_WORKER = 7, R_LONG = 8 };
 
 // what the frame function read, this frame
 struct Facts {
@@ -22,8 +22,18 @@ struct Facts {
     u32 clip_length, clip_other; // the clipboard's two words: both 0 is an empty clipboard, as stock's own check reads
     u32 clip_tracks;             // how many tracks the clipboard holds
     u32 queue_read, queue_write; // the worker's queue: equal when no request waits or runs
+    u32 frames, stereo;          // the object's own count of frames it may hold, and its stereo byte
 };
 
+// The import renders min(the clipboard's frames, the object's `frames`) frames, and a slot nothing was ever loaded
+// into says 264,608 frames, eight more than a stereo pool holds: a stereo cut of the pool's full length or more would
+// be written 32 bytes past the pool, into the next slot's or, behind the last, into whatever lies there. Such a drop
+// is refused. (The words it would write: frames times one or two.)
+enum { POOL_WORDS = 529200 };
+static inline u32 render_words(const Facts& f) {
+    const u32 frames = f.clip_length < f.frames ? f.clip_length : f.frames;
+    return frames > 0x3fffffffu ? 0xffffffffu : frames * (f.stereo ? 2u : 1u);
+}
 static inline int guard(const Facts& f) {
     if (!f.site_ok) return R_SITE;
     if (!f.ours) return R_NOT_OURS;
@@ -32,6 +42,7 @@ static inline int guard(const Facts& f) {
     if (!f.clip_length && !f.clip_other) return R_NOTHING;
     if (f.clip_tracks != 1u) return R_TRACKS;
     if (f.queue_read != f.queue_write) return R_WORKER;
+    if (render_words(f) > (u32)POOL_WORDS) return R_LONG;
     return OK;
 }
 

@@ -26,10 +26,17 @@
 // The DSP is granular_core.h, which calls nothing of the unit's; tests/host_test.cpp runs it on a computer.
 
 #include "build_r6e_card.h"
+// Everything but the render is built for size (the unit's room for packs is short): the page, the files, the keys.
+#define VEFF_SMALL _Pragma("GCC push_options") _Pragma("GCC optimize(\"Os\")")
+#define VEFF_FAST _Pragma("GCC pop_options")
+VEFF_SMALL
 #include "veff_ui.h"
+VEFF_FAST
 #include "granular_core.h"
+VEFF_SMALL
 #include "sample_file.h"
 #include "sampler_region.h"
+#include "sampler_scan.h"
 #include "drop_logic.h"
 
 typedef unsigned int u32;
@@ -94,6 +101,7 @@ static void source_publish(GrainSource* s, const short* data, u32 frames, u32 st
 }
 
 // ---------------------------------------------------------------- the engine (audio thread)
+VEFF_FAST
 extern "C" void veffgranular_render(const Op1fVoiceBlock* now) OP1F_NAMED("veffgranular_render");
 extern "C" void veffgranular_render(const Op1fVoiceBlock* now) {
     int* out = now->out;
@@ -125,6 +133,7 @@ extern "C" void veffgranular_render(const Op1fVoiceBlock* now) {
                ((now->events & (u32)OP1F_VOICE_FRESH) ? (u32)gran::EV_FRESH : 0u);
     gran::render(voices[now->voice], s, set, b, &vis[now->voice]);
 }
+VEFF_SMALL
 
 static volatile u32 shown_where, shown_how;
 extern "C" void veffgranular_shown(unsigned where, unsigned how) OP1F_NAMED("veffgranular_shown");
@@ -172,13 +181,13 @@ static int list_folder() {                            // answers the names' coun
     u32 on = 1;
     const char* p = names;
     for (int i = 0; i < n; ++i) { if (same_name(p, "sampler.off")) on = 0; while (*p) ++p; ++p; }
-    if (on != sampler_on) op1f_log(3, LOG_FILE, 1, "veffgranular: the sampler source is %s (sampler.off %s)", on ? "on" : "off", on ? "absent" : "found");
+    if (on != sampler_on) op1f_log(3, LOG_FILE, 1, "veffgranular: sampler source %u", on);
     sampler_on = on;
     {   // the drop key's number, when a file dropkey.txt gives another than the one built in (DROP.md)
         char t[16];
         const int got = op1f_read(CARD, FOLDER, "dropkey.txt", t, sizeof t);
         const u32 key = got > 0 ? dropx::key_from_text(t, (u32)got) : (u32)dropx::KEY_DEFAULT;
-        if (key != drop_key) op1f_log(3, LOG_FILE, 15, "veffgranular: the drop key is taken as %u (dropkey.txt %s)", key, got > 0 ? "found" : "absent");
+        if (key != drop_key) op1f_log(3, LOG_FILE, 15, "veffgranular: drop key %u", key);
         drop_key = key;
     }
     return n;
@@ -217,7 +226,7 @@ static void file_load(u32 number) {
     files.frames = in.frames; files.stereo = in.stereo; files.rate = in.rate;
     source_publish(&file_src, (const short*)mem, in.frames, in.stereo, 0, in.frames, in.root, in.rate_q16);
     file_loaded = number;
-    op1f_log(3, LOG_FILE, 4, "veffgranular: %s: %u frames, %s, %u Hz, root %u", files.name, in.frames, in.stereo ? "stereo" : "mono", in.rate, in.root);
+    op1f_log(3, LOG_FILE, 4, "veffgranular: %s: %u frames, st%u, %u Hz, root %u", files.name, in.frames, in.stereo, in.rate, in.root);
 }
 
 // ---------------------------------------------------------------- the sampler source (display thread)
@@ -237,18 +246,40 @@ static inline int in_ddr(u32 a, u32 bytes) { return a >= DDR_LO && a < DDR_HI &&
 struct SamplerSeen { u32 data, frames, words, stereo, sum, first, end, bad; };
 static SamplerSeen sampler_seen[SLOTS];
 
-static u32 pool_sum(u32 data, u32 bytes) {           // 8 runs of 8 words spread over the data
+// A cheap sum of a pool: 8 runs of 8 words spread over `bytes` of it, and 12 single words at 64, 128 .. 131,072
+// bytes (so that a short sound is seen too): 76 words, all inside the pool whatever `bytes` is. With no data (0, 0)
+// it answers what a silent pool sums to.
+static u32 pool_sum(u32 data, u32 bytes) {
     u32 sum = 0x9e3779b9u;
     const u32 step = (bytes >> 3) & ~3u;
-    for (u32 k = 0; k < 8u; ++k) for (u32 i = 0; i < 8u; ++i) {
-        const u32 a = data + k * step + i * 4u;
-        if (a + 4u > data + bytes) break;
-        sum = (sum ^ rd32(a)) * 0x01000193u;
-    }
+    for (u32 k = 0; k < 8u; ++k) for (u32 i = 0; i < 8u; ++i) sum = (sum ^ (data ? rd32(data + k * step + i * 4u) : 0u)) * 0x01000193u;
+    for (u32 n = 0; n < 12u; ++n) sum = (sum ^ (data ? rd32(data + (64u << n)) : 0u)) * 0x01000193u;
     return sum;
 }
 
 static u32 own_frames[SLOTS], own_sum[SLOTS], own_summed[SLOTS];   // a drop of our own: its frames, and the pool's sum after it
+// Where a slot's sound ends is searched a little each frame (sampler_scan.h), one slot at a time, and only after the
+// slot's cheap sum (8 runs of 8 words) or its fields changed. Until its search is over a slot plays and shows nothing.
+static SamplerSeen scan_want[SLOTS];                  // the slot as it was when its search was asked for
+static sscan::Scan scan;
+static u32 scan_slot = SLOTS, scan_pending, scan_frames, scans_done;   // scan_slot SLOTS: none under way
+static u32 words_this_frame, words_most;              // what the frame read of the pools, and the most any frame did
+
+static void sampler_found(u32 slot, SamplerSeen& s, u32 first, u32 end) {   // where the sample begins and ends is known
+    SamplerSeen& was = sampler_seen[slot];
+    s.first = first; s.end = end;
+    if (end < first + 2u) {
+        s.bad = SAMPLER_EMPTY;
+        if (was.bad != s.bad) op1f_log(3, LOG_FILE, 5, "veffgranular: synth %u: no sound in the sampler (f%u st%u)", slot + 1, s.frames, s.stereo);
+        sampler_src[slot].valid = 0;
+    } else {
+        source_publish(&sampler_src[slot], (const short*)s.data, end, s.stereo, first, end, 60, 65536);
+        op1f_log(3, LOG_FILE, 6, "veffgranular: synth %u: sampler frames %u..%u, f%u w%u st%u, ours %u", slot + 1, first, end, s.frames, s.words, s.stereo, own_frames[slot]);
+    }
+    was = s;
+}
+
+// The cheap look at a slot: its fields and the sum, 64 words. Asks for a search when they changed.
 static void sampler_refresh(u32 slot) {
     SamplerSeen s = { 0, 0, 0, 0, 0, 0, 0, 0 };
     const u32 holder = rd32(SLOT_TABLE + slot * 4u);
@@ -264,28 +295,57 @@ static void sampler_refresh(u32 slot) {
         else if (s.stereo > 1u) s.bad = SAMPLER_BAD_STEREO;
     }
     SamplerSeen& was = sampler_seen[slot];
-    if (!s.bad) {
-        s.sum = pool_sum(s.data, sampler_capacity(s.frames, s.stereo) << (s.stereo ? 2 : 1));   // over all the pool may hold
-        if (sampler_src[slot].valid && was.data == s.data && was.frames == s.frames && was.stereo == s.stereo && was.sum == s.sum) return;
-        if (was.bad == (u32)SAMPLER_EMPTY && was.data == s.data && was.frames == s.frames && was.stereo == s.stereo && was.sum == s.sum) return;   // still silent
-        // changed, or first seen. A drop of our own is still what the pool holds only while its sum stands.
-        if (own_frames[slot] && own_summed[slot] && own_sum[slot] != s.sum) own_frames[slot] = 0;
-        s.bad = (u32)sampler_region((const volatile short*)s.data, s.frames, s.stereo, own_frames[slot], &s.first, &s.end);   // 0 or 6 (empty)
-        if (own_frames[slot] && !own_summed[slot]) { own_sum[slot] = s.sum; own_summed[slot] = 1; }
-    }
+    const u32 bit = 1u << slot;
     if (s.bad) {
-        if (was.bad != s.bad) {
-            if (s.bad == (u32)SAMPLER_EMPTY) op1f_log(3, LOG_FILE, 5, "veffgranular: the sampler of synth %u holds no sound (frames %u, stereo %u)", slot + 1, s.frames, s.stereo);
-            else op1f_log(2, LOG_FILE, 5, "veffgranular: sampler source of synth %u not valid (check %u)", slot + 1, s.bad);
-        }
+        if (was.bad != s.bad) op1f_log(2, LOG_FILE, 5, "veffgranular: synth %u: sampler source not valid (check %u)", slot + 1, s.bad);
         sampler_src[slot].valid = 0;
+        scan_pending &= ~bit; if (scan_slot == slot) scan_slot = SLOTS;
         was = s;
         return;
     }
-    source_publish(&sampler_src[slot], (const short*)s.data, s.end, s.stereo, s.first, s.end, 60, 65536);
-    op1f_log(3, LOG_FILE, 6, "veffgranular: sampler source of synth %u: frames %u to %u of %u, %s%s", slot + 1, s.first, s.end,
-             sampler_capacity(s.frames, s.stereo), s.stereo ? "stereo" : "mono", own_frames[slot] ? ", a drop of our own" : "");
-    was = s;
+    s.sum = pool_sum(s.data, sampler_capacity(s.frames, s.stereo) << (s.stereo ? 2 : 1));
+    words_this_frame += 76u;
+    const SamplerSeen& ref = (scan_pending & bit) ? scan_want[slot] : was;   // what the last look saw
+    const int looked = (scan_pending & bit) || was.bad == 0u || was.bad == (u32)SAMPLER_EMPTY;
+    if (looked && ref.data == s.data && ref.frames == s.frames && ref.stereo == s.stereo && ref.sum == s.sum) return;
+    // changed, or first seen
+    if (own_frames[slot] && own_summed[slot] && own_sum[slot] != s.sum) own_frames[slot] = 0;   // no longer as our drop left it
+    if (own_frames[slot]) {                           // a drop of our own: its frames are known, nothing to search
+        if (!own_summed[slot]) { own_sum[slot] = s.sum; own_summed[slot] = 1; }
+        scan_pending &= ~bit; if (scan_slot == slot) scan_slot = SLOTS;
+        const u32 capacity = sampler_capacity(s.frames, s.stereo);
+        sampler_found(slot, s, 0, own_frames[slot] < capacity ? own_frames[slot] : capacity);
+        return;
+    }
+    if (s.words || s.sum == pool_sum(0, 0)) {         // loaded from a file: `words` says where it ends; or a silent pool
+        u32 first = 0, end = 0;
+        if (s.words) sampler_region_loaded(s.frames, s.words, s.stereo, &first, &end);
+        scan_pending &= ~bit; if (scan_slot == slot) scan_slot = SLOTS;
+        sampler_found(slot, s, first, end);
+        return;
+    }
+    sampler_src[slot].valid = 0;                      // nothing of it is played or shown until the search is over
+    scan_want[slot] = s;
+    scan_pending |= bit;
+    if (scan_slot == slot) scan_slot = SLOTS;         // a search under way was for what the pool held before
+}
+
+// One frame of the search: at most sscan::BUDGET_WORDS words of one slot's pool.
+static void sampler_scan_frame() {
+    if (scan_slot >= (u32)SLOTS) {
+        if (!scan_pending) return;
+        u32 slot = 0; while (!(scan_pending >> slot & 1u)) ++slot;
+        scan_slot = slot; scan_frames = 0;
+        sscan::begin(scan, sampler_capacity(scan_want[slot].frames, scan_want[slot].stereo), scan_want[slot].stereo);
+    }
+    ++scan_frames;
+    words_this_frame += sscan::step(scan, (const volatile short*)scan_want[scan_slot].data, (unsigned)sscan::BUDGET_WORDS);
+    if (scan.state != (unsigned)sscan::DONE) return;
+    const u32 slot = scan_slot;
+    scan_slot = SLOTS; scan_pending &= ~(1u << slot);
+    SamplerSeen s = scan_want[slot];
+    sampler_found(slot, s, 0, scan.e);
+    if (!scans_done++) op1f_log(3, LOG_FILE, 18, "veffgranular: v5 first scan done: synth %u, end %u, %u frame(s)", slot + 1, scan.e, scan_frames);
 }
 
 // the slot's sample object when its table word, holder, object and pool are where the sampler source expects them; 0
@@ -314,9 +374,11 @@ static u32 drop_site_checked, drop_after, drop_after_slot, drop_after_sum;
 
 static void drop_facts(dropx::Facts& f, u32 slot, u32 ours, u32 disk) {
     f.site_ok = drop_armed; f.ours = ours; f.disk = disk;
-    f.chain_ok = 0; f.clip_length = f.clip_other = f.clip_tracks = 0; f.queue_read = 0; f.queue_write = 1;
+    f.chain_ok = 0; f.clip_length = f.clip_other = f.clip_tracks = 0; f.queue_read = 0; f.queue_write = 1; f.frames = 0; f.stereo = 0;
     if (!drop_armed) return;                          // another firmware: none of its words is read
-    f.chain_ok = slot < (u32)SLOTS && sampler_object(slot) != 0;
+    const u32 object = slot < (u32)SLOTS ? sampler_object(slot) : 0u;
+    f.chain_ok = object != 0;
+    if (object) { f.frames = rd32(object + OFF_FRAMES); f.stereo = rd8(object + OFF_STEREO); }
     f.clip_length = rd32(CLIP_LENGTH); f.clip_other = rd32(CLIP_OTHER);
     f.clip_tracks = (rd32(CLIP_END) - rd32(CLIP_BEGIN)) >> 2;
     f.queue_read = rd32(WORKER_READ); f.queue_write = rd32(WORKER_WRITE);
@@ -327,8 +389,7 @@ static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
         u32 sum = 0x811c9dc5u;
         for (u32 i = 0; i < DROP_SITE_BYTES; ++i) sum = (sum ^ rd8(DROP_SITE + i)) * 0x01000193u;
         drop_armed = sum == DROP_SITE_SUM;
-        op1f_log(3, LOG_FILE, 11, "veffgranular: drop experiment: the call site sums to %08x, %s; the drop key is taken as %u",
-                 sum, drop_armed ? "as OS 1.7.3+0's: armed" : "not OS 1.7.3+0's: never called", (u32)drop_key);
+        op1f_log(3, LOG_FILE, 11, "veffgranular: drop: site %08x, armed %u, key %u", sum, (u32)drop_armed, (u32)drop_key);
     }
     const u32 request = drop_request;
     if (request) drop_request = 0;
@@ -339,7 +400,7 @@ static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
     const u32 refused_before = drop.refused;
     const int action = dropx::step(drop, request, f);
     if (drop.refused != refused_before)
-        op1f_log(2, LOG_FILE, 12, "veffgranular: drop refused, reason %d (synth %u, clipboard %u frames, %u track(s), queue %u/%u); %u done, %u refused",
+        op1f_log(2, LOG_FILE, 12, "veffgranular: drop refused %d: synth %u clip %u t%u q%u/%u; %u done %u refused",
                  drop.reason, slot + 1, f.clip_length, f.clip_tracks, f.queue_read, f.queue_write, drop.done, drop.refused);
     if (action == dropx::A_HOLD) { drop_hold |= 1u << drop.slot; sampler_src[drop.slot].valid = 0; }
     else if (action == dropx::A_RELEASE) drop_hold &= ~(1u << drop.slot);
@@ -349,7 +410,7 @@ static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
         u32 frames = rd32(object + OFF_FRAMES), stereo = rd8(object + OFF_STEREO);
         const u32 bytes = sampler_capacity(frames, stereo > 1u ? 1u : stereo) << (stereo ? 2 : 1);
         const u32 sum_before = pool_sum(rd32(object), bytes);
-        op1f_log(3, LOG_FILE, 13, "veffgranular: drop: calling the import for synth %u, object %08x: frames %u words %u stereo %u kind %u x %08x %08x %08x, pool sum %08x; clipboard %u frames, %u track(s), other %u; queue %u/%u",
+        op1f_log(3, LOG_FILE, 13, "veffgranular: drop> synth %u obj %08x f%u w%u st%u k%u x %08x %08x %08x sum %08x clip %u t%u o%u q%u/%u",
                  slot_now + 1, object, frames, rd32(object + OFF_WORDS), stereo, rd8(object + OFF_STEREO + 1u),
                  rd32(object + 0xd75cu), rd32(object + 0xd760u), rd32(object + 0xd764u), sum_before,
                  f.clip_length, f.clip_tracks, f.clip_other, f.queue_read, f.queue_write);
@@ -359,16 +420,14 @@ static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
         const u32 sum_after = pool_sum(rd32(object), sampler_capacity(frames, stereo > 1u ? 1u : stereo) << (stereo ? 2 : 1));
         // what the drop rendered: the clipboard's frames, as many as the sample may hold (the import's own rule)
         const u32 capacity = sampler_capacity(frames, stereo > 1u ? 1u : stereo);
-        own_frames[slot_now] = sum_after != sum_before ? (f.clip_length < capacity ? f.clip_length : capacity) : 0u;
-        own_summed[slot_now] = 0;
+        if (sum_after != sum_before) { own_frames[slot_now] = f.clip_length < capacity ? f.clip_length : capacity; own_summed[slot_now] = 0; }
+        else if (!(own_frames[slot_now] && own_summed[slot_now] && own_sum[slot_now] == sum_after)) own_frames[slot_now] = 0;   // the same cut again keeps what is known
         sampler_seen[slot_now].data = 0;                          // seen anew: a new generation, a fresh overview
         sampler_refresh(slot_now);
         drop_hold &= ~(1u << slot_now);
-        op1f_log(3, LOG_FILE, 14, "veffgranular: drop: the import answered %d; frames %u words %u stereo %u x %08x %08x %08x, pool sum %08x (%s), sounding to frame %u; queue %u/%u; %u done, %u refused",
+        op1f_log(3, LOG_FILE, 14, "veffgranular: drop< %d f%u w%u st%u x %08x %08x %08x sum %08x changed %u ours %u q%u/%u; %u done %u refused",
                  answer, frames, rd32(object + OFF_WORDS), stereo, rd32(object + 0xd75cu), rd32(object + 0xd760u), rd32(object + 0xd764u),
-                 sum_after, sum_after != sum_before ? "the pool changed" : "THE POOL IS AS IT WAS",
-                 sampler_sounding((const volatile short*)rd32(object), capacity, stereo > 1u ? 1u : stereo),
-                 rd32(WORKER_READ), rd32(WORKER_WRITE), drop.done, drop.refused);
+                 sum_after, (u32)(sum_after != sum_before), own_frames[slot_now], rd32(WORKER_READ), rd32(WORKER_WRITE), drop.done, drop.refused);
         drop_after = 40; drop_after_slot = slot_now; drop_after_sum = sum_after;
     }
     if (drop_after && --drop_after == 0 && drop_armed) {          // 40 frames later: did anything go on changing?
@@ -376,8 +435,8 @@ static void drop_frame(const Op1fFrame* now, u32 how, u32 where, u32 riding) {
         if (object) {
             const u32 frames = rd32(object + OFF_FRAMES), stereo = rd8(object + OFF_STEREO) ? 1u : 0u;
             const u32 sum = pool_sum(rd32(object), sampler_capacity(frames, stereo) << (stereo ? 2 : 1));
-            op1f_log(3, LOG_FILE, 16, "veffgranular: drop: 40 frames on, synth %u: words %u, pool sum %08x (%s), queue %u/%u", drop_after_slot + 1,
-                     rd32(object + OFF_WORDS), sum, sum == drop_after_sum ? "as right after the call" : "changed since the call", rd32(WORKER_READ), rd32(WORKER_WRITE));
+            op1f_log(3, LOG_FILE, 16, "veffgranular: drop+40 synth %u w%u sum %08x same %u q%u/%u", drop_after_slot + 1,
+                     rd32(object + OFF_WORDS), sum, (u32)(sum == drop_after_sum), rd32(WORKER_READ), rd32(WORKER_WRITE));
         }
     }
     drop_busy = drop.state != (u32)dropx::IDLE;
@@ -448,8 +507,8 @@ static void kept_read(u32 slot) {
             set_extra[slot][X_VOLUME] = held(reverse, 0, 100);
             op1f_param_set(CARD, ASK_ENGINE, slot, U_SHAPE, 0);
             op1f_param_set(CARD, ASK_ENGINE, slot, U_REVERSE, 0);
-            op1f_log(3, LOG_FILE, 9, "veffgranular: synth %u holds a sound of version 1 (%s): spread %d and volume %d moved to page B, shape and reverse 0",
-                     slot + 1, version == 1 ? "its record" : "its values", (int)set_extra[slot][X_SPREAD], (int)set_extra[slot][X_VOLUME]);
+            op1f_log(3, LOG_FILE, 9, "veffgranular: synth %u: a version 1 sound, spread %d volume %d moved to page B",
+                     slot + 1, (int)set_extra[slot][X_SPREAD], (int)set_extra[slot][X_VOLUME]);
         }
         unsaved |= 1u << slot;                                           // from now on the sound carries a record of version 2
     }
@@ -539,6 +598,7 @@ static void paint_art(void* c, u32 where, const GrainSource& s, int values[8], i
         if (files.error == 101) q = put(q, "NO MEMORY FOR A SAMPLE");
         else if (files.error == 102) q = put(q, "FILE OVER 4 MB");
         else if (files.error && files.error < 100u) { q = put(q, "FILE NOT TAKEN: "); q = put(q, sfile::ERROR_TEXT[files.error < 9u ? files.error : 2u]); }
+        else if (sampler_on && (scan_pending >> slot & 1u)) q = put(q, "READING THE SAMPLER");
         else if (sampler_on && sampler_seen[slot].bad == (u32)SAMPLER_EMPTY) { q = put(q, "SAMPLER "); q = put_number(q, (int)slot + 1); q = put(q, " EMPTY: LIFT, THEN DROP HERE"); }
         else { q = put(q, "NO SAMPLE: PUT "); q = put_number(q, (int)set_file[slot]); q = put(q, ".WAV IN VEFFGRANULAR"); }
         text(c, VEFF_MID_X - (text_width(line, 2, 2) >> 1), Y - 4, line, on ? VEFF_PINK : VEFF_GREY, 2, 2);
@@ -636,11 +696,13 @@ static void paint(void* c, u32 where, u32 how, int shift) {
 }
 
 // ---------------------------------------------------------------- the frame (display thread)
-static struct { u32 stood, refusal_said, started, disk_was, round; u32 keys_said[4], keys_shift_said[4]; } fr;
+static struct { u32 stood, refusal_said, started, disk_was, round; u32 keys_said[4], keys_shift_said[4], hello, most_said; } fr;
 
 extern "C" void veffgranular_frame(const Op1fFrame* now) OP1F_NAMED("veffgranular_frame");
 extern "C" void veffgranular_frame(const Op1fFrame* now) {
     if (now->bytes < (u32)FRAME_LEVEL_4) return;
+    if (!fr.hello) { fr.hello = 1; op1f_log(3, LOG_FILE, 19, "veffgranular: v5 start"); }   // before anything else
+    words_this_frame = 0;
     if (!fr.stood) {
         if (op1f_page_stand_in(CARD, ASK_ENGINE, 0)) fr.stood = 1;
         else if (!fr.refusal_said) { fr.refusal_said = 1; op1f_log(2, LOG_FILE, 7, "veffgranular: the base did not take its page"); }
@@ -648,7 +710,7 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
     if (!fr.started) {
         fr.started = 1;
         for (u32 p = 0; p < (u32)SLOTS; ++p) { set_file[p] = 1; for (int e = 0; e < EXTRAS; ++e) set_extra[p][e] = EXTRA_START[e]; }
-        op1f_log(3, LOG_FILE, 8, "veffgranular: ready; the synth sampler's sample of each slot, else files 1..8 in the folder veffgranular; sampler.off there switches the sampler source off");
+        op1f_log(3, LOG_FILE, 8, "veffgranular: ready");
     }
     // the kept values of every sound that rides the engine
     const u32 riding = (u32)op1f_riding(CARD, ASK_ENGINE) & 0xffu;
@@ -672,6 +734,12 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
             sampler_refresh(slot);
             fr.round = (fr.round + 1u) & 7u;
             if (fr.round != slot) sampler_refresh(fr.round);
+            sampler_scan_frame();
+            if (words_this_frame > words_most) words_most = words_this_frame;
+            if (!scan_pending && scans_done && fr.most_said != words_most && (now->frame & 255u) == 0u) {   // now and then, when it grew
+                fr.most_said = words_most;
+                op1f_log(3, LOG_FILE, 20, "veffgranular: %u scan(s), at most %u words a frame", scans_done, words_most);
+            }
         }
     }
     drop_frame(now, how, where, riding);
@@ -705,14 +773,15 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
         if (!fresh) continue;
         u32 bit = 0; while (!(fresh >> bit & 1u)) ++bit;
         fr.keys_said[w] |= 1u << bit;
-        op1f_log(3, LOG_FILE, 10, "veffgranular: key %u went down while the page was up (not taken)", w * 32u + bit);
+        op1f_log(3, LOG_FILE, 10, "veffgranular: key %u down on the page, not taken", w * 32u + bit);
     }
     for (u32 w = 0; w < 4u; ++w) {                    // and with shift held: shift and drop is left to the unit on purpose
         const u32 fresh = other_keys_shift[w] & ~fr.keys_shift_said[w];
         if (!fresh) continue;
         u32 bit = 0; while (!(fresh >> bit & 1u)) ++bit;
         fr.keys_shift_said[w] |= 1u << bit;
-        op1f_log(3, LOG_FILE, 17, "veffgranular: key %u went down with shift held while the page was up (not taken)", w * 32u + bit);
+        op1f_log(3, LOG_FILE, 17, "veffgranular: key %u down with shift on the page, not taken", w * 32u + bit);
     }
     if (now->page == CARD && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP)) paint(now->canvas, where, how, now->shift != 0);
 }
+VEFF_FAST

@@ -10,6 +10,7 @@
 #include "../granular_core.h"
 #include "../sample_file.h"
 #include "../sampler_region.h"
+#include "../sampler_scan.h"
 #include "../drop_logic.h"
 
 using namespace gran;
@@ -418,14 +419,19 @@ int main(int argc, char** argv) {
     // ---- the drop experiment's decisions (the call itself cannot be made here)
     {
         using namespace dropx;
-        const Facts good = { 1, 1, 0, 1, 44100, 0, 1, 5, 5 };
+        const Facts good = { 1, 1, 0, 1, 44100, 0, 1, 5, 5, 264608, 1 };
         CHECK(guard(good) == OK, "the good facts are refused");
         struct { Facts f; int want; } G[] = {
-            { { 0, 1, 0, 1, 44100, 0, 1, 5, 5 }, R_SITE },      { { 1, 0, 0, 1, 44100, 0, 1, 5, 5 }, R_NOT_OURS },
-            { { 1, 1, 1, 1, 44100, 0, 1, 5, 5 }, R_DISK },      { { 1, 1, 0, 0, 44100, 0, 1, 5, 5 }, R_CHAIN },
-            { { 1, 1, 0, 1, 0, 0, 1, 5, 5 }, R_NOTHING },       { { 1, 1, 0, 1, 0, 7, 1, 5, 5 }, OK },
-            { { 1, 1, 0, 1, 44100, 0, 0, 5, 5 }, R_TRACKS },    { { 1, 1, 0, 1, 44100, 0, 4, 5, 5 }, R_TRACKS },
-            { { 1, 1, 0, 1, 44100, 0, 1, 5, 6 }, R_WORKER },    { { 0, 0, 1, 0, 0, 0, 0, 1, 2 }, R_SITE },
+            { { 0, 1, 0, 1, 44100, 0, 1, 5, 5, 264608, 1 }, R_SITE },      { { 1, 0, 0, 1, 44100, 0, 1, 5, 5, 264608, 1 }, R_NOT_OURS },
+            { { 1, 1, 1, 1, 44100, 0, 1, 5, 5, 264608, 1 }, R_DISK },      { { 1, 1, 0, 0, 44100, 0, 1, 5, 5, 264608, 1 }, R_CHAIN },
+            { { 1, 1, 0, 1, 0, 0, 1, 5, 5, 264608, 1 }, R_NOTHING },       { { 1, 1, 0, 1, 0, 7, 1, 5, 5, 264608, 1 }, OK },
+            { { 1, 1, 0, 1, 44100, 0, 0, 5, 5, 264608, 1 }, R_TRACKS },    { { 1, 1, 0, 1, 44100, 0, 4, 5, 5, 264608, 1 }, R_TRACKS },
+            { { 1, 1, 0, 1, 44100, 0, 1, 5, 6, 264608, 1 }, R_WORKER },    { { 0, 0, 1, 0, 0, 0, 0, 1, 2, 264608, 1 }, R_SITE },
+            { { 1, 1, 0, 1, 264600, 0, 1, 5, 5, 264608, 1 }, OK },       // a stereo cut of exactly the pool's length fits
+            { { 1, 1, 0, 1, 264601, 0, 1, 5, 5, 264608, 1 }, R_LONG },   // one frame more, into a slot never loaded: past the pool
+            { { 1, 1, 0, 1, 0xffffffffu, 0, 1, 5, 5, 264608, 1 }, R_LONG },
+            { { 1, 1, 0, 1, 999999, 0, 1, 5, 5, 264600, 1 }, OK },       // a loaded slot says 264,600: the import stops there itself
+            { { 1, 1, 0, 1, 999999, 0, 1, 5, 5, 264608, 0 }, OK },       { { 1, 1, 0, 1, 999999, 0, 1, 5, 5, 0xffffffffu, 1 }, R_LONG },
         };
         for (auto& g : G) CHECK(guard(g.f) == g.want, "guard: %d, want %d", guard(g.f), g.want);
 
@@ -530,6 +536,42 @@ int main(int argc, char** argv) {
             if (got == SAMPLER_OK) { GrainSource g = { d, end, stereo, first, end, 60, 65536, 1, 1 }; if (!grain_source_ok(g)) ++wrong; }
         }
         CHECK(!wrong, "%u random pools read wrong", wrong);
+        // a slot loaded from a file: where `words` says
+        { struct { unsigned frames, words, stereo; int want; unsigned first, end; } T[] = {
+              { 264600, 16392, 0, SAMPLER_OK, 8, 16392 }, { 264600, 176408, 0, SAMPLER_OK, 8, 176408 }, { 264600, 264600, 0, SAMPLER_OK, 8, 264600 },
+              { 264600, 529200, 1, SAMPLER_OK, 4, 264600 }, { 264600, 0xffffffffu, 1, SAMPLER_OK, 4, 264600 }, { 264600, 0xffffffffu, 0, SAMPLER_OK, 8, 264600 },
+              { 264600, 8, 0, SAMPLER_EMPTY, 0, 0 }, { 264600, 9, 0, SAMPLER_EMPTY, 0, 0 }, { 5, 529200, 1, SAMPLER_EMPTY, 0, 0 }, { 264600, 0, 1, SAMPLER_EMPTY, 0, 0 },
+              { 264600, 20001, 1, SAMPLER_OK, 4, 10000 }, { 264600, 20000, 2, SAMPLER_BAD_STEREO, 0, 0 } };
+          for (auto& t : T) { unsigned f1 = 9, e1 = 9; const int got = sampler_region_loaded(t.frames, t.words, t.stereo, &f1, &e1);
+              CHECK(got == t.want && f1 == t.first && e1 == t.end, "a loaded slot frames %u words %u stereo %u: %d, %u..%u", t.frames, t.words, t.stereo, got, f1, e1); } }
+
+        // the search a little each frame: the same answer as the search in one go, and never over its budget
+        { unsigned rs2 = 11, bad = 0, most_calls = 0;
+          for (int t = 0; t < 2000; ++t) {
+              rs2 = rs2 * 1664525u + 1013904223u; const unsigned stereo = t & 1u, cap = sampler_capacity((t % 5 == 0) ? 264608u : 264600u, stereo);
+              rs2 = rs2 * 1664525u + 1013904223u; const unsigned len = (t % 7 == 0) ? 0u : (rs2 >> 7) % (cap + 1u);
+              rs2 = rs2 * 1664525u + 1013904223u; const unsigned budget = (t % 3 == 0) ? (unsigned)sscan::BUDGET_WORDS : 4u + (rs2 >> 9) % 600u;
+              std::fill(pool.begin(), pool.begin() + POOL, (short)0);
+              for (unsigned i = 0; i < len * (stereo ? 2u : 1u); ++i) d[i] = (short)(1 + (i % 7));
+              sscan::Scan sc; sscan::begin(sc, cap, stereo);
+              unsigned calls = 0;
+              while (sc.state != (unsigned)sscan::DONE && calls < 400000u) { const unsigned used = sscan::step(sc, d, budget); if (used > budget) ++bad; ++calls; }
+              if (sc.state != (unsigned)sscan::DONE || sc.e != sampler_sounding(d, cap, stereo) || sc.e != len) ++bad;
+              if (budget == (unsigned)sscan::BUDGET_WORDS && calls > most_calls) most_calls = calls;
+          }
+          CHECK(!bad, "%u searches over their budget or with another answer", bad);
+          CHECK(most_calls <= 10, "a search of %u frames at the budget", most_calls);
+          std::printf("sampler scan: 2000 pools, each call within its budget, the answer of the search in one go; at %d words a frame the longest took %u frames\n", (int)sscan::BUDGET_WORDS, most_calls); }
+        // what the search reads of each kind of pool on the unit this was written for
+        { struct { const char* what; unsigned frames, stereo, len; } O[] = { { "a silent stereo pool", 264608, 1, 0 }, { "a silent mono pool", 264608, 0, 0 },
+              { "a stereo cut of 255,039 frames", 264608, 1, 255039 }, { "a full stereo pool", 264600, 1, 264596 }, { "a mono sample of 176,408 words", 264600, 0, 176408 } };
+          for (auto& o : O) {
+              std::fill(pool.begin(), pool.begin() + POOL, (short)0);
+              for (unsigned i = 0; i < o.len * (o.stereo ? 2u : 1u); ++i) d[i] = 9;
+              sscan::Scan sc; sscan::begin(sc, sampler_capacity(o.frames, o.stereo), o.stereo);
+              const unsigned all = sscan::step(sc, d, 0xffffffffu);
+              std::printf("sampler scan: %s: %u words read in all, %u frames at the budget\n", o.what, all, (all + (unsigned)sscan::BUDGET_WORDS - 1u) / (unsigned)sscan::BUDGET_WORDS);
+          } }
         std::printf("sampler region: the probe's cases, drops with leftovers, 3000 random pools\n");
     }
 

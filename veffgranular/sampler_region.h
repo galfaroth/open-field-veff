@@ -10,9 +10,13 @@
 //     `words` for the sample's length; that is wrong after any drop or recording, so it is no longer used.
 //   - A load writes from the ninth word on and zeroes the rest of the pool. A drop zeroes and writes only the frames
 //     it renders, from the first word: what an older, longer sample left behind them stays in the pool.
-// So nothing in the object says where a dropped sample ends. The rule here: the sample is the pool up to its last
-// frame that is not silent; and when the pack itself made the drop (the drop experiment), it is the frames that drop
-// rendered, for as long as the pool is as that drop left it.
+// So nothing in the object says where a dropped sample ends. The rules, in this order:
+//   1. the pack itself made the drop (the drop experiment): the frames that drop rendered, for as long as the pool
+//      is as that drop left it;
+//   2. `words` is not 0: the slot was loaded from a file, and `words` says where it ends (sampler_region_loaded);
+//   3. `words` is 0 and the pool is silent: no sample;
+//   4. `words` is 0 and the pool is not silent (a drop or a recording into a slot never loaded): the pool up to its
+//      last frame that is not silent, searched a little each frame (sampler_scan.h).
 #ifndef VEFF_SAMPLER_REGION_H
 #define VEFF_SAMPLER_REGION_H
 
@@ -39,6 +43,22 @@ static inline unsigned sampler_sounding(const volatile short* d, unsigned capaci
     if (e != capacity) e += (unsigned)SAMPLER_SCAN_STEP;   // the step just passed was only probed: its lower frames may sound
     while (e && sampler_frame_silent(d, e - 1u, stereo)) --e;
     return e;
+}
+
+// A slot whose sound was LOADED from a file: `words` (object + 0xd76c) is then the 16-bit words the load wrote, the
+// 8 words of zero head pad included, so the sample is mono frames [8, words) or stereo frames [4, words / 2), never
+// past `frames` nor the pool. Only a load writes `words`: after a later drop or recording on the sampler's own page
+// it still says what the load wrote, and the region is then the old sample's length over the new sound.
+static inline int sampler_region_loaded(unsigned frames, unsigned words, unsigned stereo, unsigned* first, unsigned* end) {
+    *first = *end = 0;
+    if (stereo > 1u) return SAMPLER_BAD_STEREO;
+    if (words > (unsigned)SAMPLER_POOL_WORDS) words = (unsigned)SAMPLER_POOL_WORDS;
+    const unsigned f = stereo ? 4u : 8u;
+    unsigned e = stereo ? words >> 1 : words;
+    if (e > frames) e = frames;
+    if (e < f + 2u) return SAMPLER_EMPTY;
+    *first = f; *end = e;
+    return SAMPLER_OK;
 }
 
 // The region [*first, *end) in frames, or why there is none. `known`: the frames a drop of the pack's own rendered,
