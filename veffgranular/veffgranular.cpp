@@ -10,18 +10,20 @@
 //   volume.
 //
 // Where the sample comes from (grain_source.h is the interface; source_for() below is the one place that chooses):
-//   1. the file source (the default, works today): a WAV or AIFF named 1.wav .. 8.aif in the pack's folder
-//      `veffgranular` (disk mode), read into 4 MiB of working memory (level 6) by the frame function;
-//   2. the sampler source (OFF unless a file `sampler.on` is in the same folder): the sample the unit's synth sampler
-//      holds for this sound's slot, read in place. Found by reading the firmware on a computer (branch
-//      veffsampleprobe, FINDINGS.md); NOT confirmed on a unit. When its checks fail it is not valid and the file
-//      source plays instead.
+//   1. the sampler source (the default; a file `sampler.off` in the pack's folder switches it off): the sample the
+//      unit's synth sampler holds for this sound's slot, read in place, OS 1.7.3+0 only. Where it lies was read in
+//      the firmware on a computer and confirmed by a probe pack on one unit (sampler_region.h). When its checks fail
+//      (another firmware, an address that does not look right, an empty slot) it is not valid and the file source
+//      plays instead;
+//   2. the file source: a WAV or AIFF named 1.wav .. 8.aif in the pack's folder `veffgranular` (disk mode), read
+//      into 4 MiB of working memory (level 6) by the frame function.
 // The DSP is granular_core.h, which calls nothing of the unit's; tests/host_test.cpp runs it on a computer.
 
 #include "build_r6e_card.h"
 #include "veff_ui.h"
 #include "granular_core.h"
 #include "sample_file.h"
+#include "sampler_region.h"
 
 typedef unsigned int u32;
 typedef int i32;
@@ -41,7 +43,7 @@ static const int VALUE_START[8] = { 250, 50, 50, 10, 0, 30, 0, 80 };   // as the
 static volatile u32 set_mode[SLOTS], set_window[SLOTS], set_loop[SLOTS], set_file[SLOTS];   // kept values
 static volatile u32 playing_slot;                     // the slot the render last played, + 1 (0: none yet)
 static volatile u32 file_loaded;                      // the file number in file_src, 1..8, or 0
-static volatile u32 sampler_on;                       // the sampler source is switched on (sampler.on)
+static volatile u32 sampler_on = 1;                   // the sampler source is on unless a file sampler.off says no
 static GrainSource file_src;
 static GrainSource sampler_src[SLOTS];
 static GrainSource none_src;                          // valid 0
@@ -142,12 +144,12 @@ static struct {
 } files;
 static char names[NAMES_ROOM];
 
-static int list_folder() {                            // answers the names' count, notes sampler.on
+static int list_folder() {                            // answers the names' count, notes sampler.off
     const int n = op1f_list(CARD, FOLDER, names, sizeof names);
-    u32 on = 0;
+    u32 on = 1;
     const char* p = names;
-    for (int i = 0; i < n; ++i) { if (same_name(p, "sampler.on")) on = 1; while (*p) ++p; ++p; }
-    if (on != sampler_on) op1f_log(3, LOG_FILE, 1, "veffgranular: the sampler source is %s (sampler.on %s)", on ? "on" : "off", on ? "found" : "absent");
+    for (int i = 0; i < n; ++i) { if (same_name(p, "sampler.off")) on = 0; while (*p) ++p; ++p; }
+    if (on != sampler_on) op1f_log(3, LOG_FILE, 1, "veffgranular: the sampler source is %s (sampler.off %s)", on ? "on" : "off", on ? "absent" : "found");
     sampler_on = on;
     return n;
 }
@@ -189,19 +191,20 @@ static void file_load(u32 number) {
 }
 
 // ---------------------------------------------------------------- the sampler source (display thread)
-// OS 1.7.3+0 only. What our code needs of the firmware (FINDINGS.md on branch veffsampleprobe; read on a computer,
-// not confirmed on a unit): a table of eight words, one a synth slot, each pointing at the slot's sample holder;
-// holder + 0 the sample object; object + 0 the 16-bit data (expected: the slot's fixed pool), + 0xd768 the frames,
-// byte + 0xd770 stereo. The first 16 bytes of the data are a zero pad. Only read, never written.
+// OS 1.7.3+0 only. What our code needs of the firmware (read on a computer, then confirmed by a probe pack on one
+// unit): a table of eight words, one a synth slot, each pointing at the slot's sample holder; holder + 0 the sample
+// object; object + 0 the 16-bit data (the slot's fixed pool), + 0xd768 the frames it holds at most, + 0xd76c the
+// 16-bit words the last load, drop or recording wrote (0: an empty slot), byte + 0xd770 stereo. The first 16 bytes
+// of the data are a zero pad. Only read, never written. sampler_region.h turns the three fields into the region.
 static const u32 SLOT_TABLE = 0x0802f73cu;
 static const u32 POOL = 0x840b0becu, POOL_STRIDE = 0x102660u;    // a slot's pool: 264,600 stereo frames
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u;
-enum { OFF_FRAMES = 0xd768, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, POOL_FRAMES_STEREO = 264600, POOL_FRAMES_MONO = 529200 };
+enum { OFF_FRAMES = 0xd768, OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, POOL_FRAMES_STEREO = 264600, POOL_FRAMES_MONO = 529200 };
 static inline u32 rd32(u32 a) { return *(const volatile u32*)a; }
 static inline u32 rd8(u32 a) { return *(const volatile u8*)a; }
 static inline int in_ddr(u32 a, u32 bytes) { return a >= DDR_LO && a < DDR_HI && bytes <= DDR_HI - a; }
 
-struct SamplerSeen { u32 data, frames, stereo, sum, end, bad; };
+struct SamplerSeen { u32 data, frames, words, stereo, sum, first, end, bad; };
 static SamplerSeen sampler_seen[SLOTS];
 
 static u32 pool_sum(u32 data, u32 bytes) {           // 8 runs of 8 words spread over the data
@@ -216,7 +219,7 @@ static u32 pool_sum(u32 data, u32 bytes) {           // 8 runs of 8 words spread
 }
 
 static void sampler_refresh(u32 slot) {
-    SamplerSeen s = { 0, 0, 0, 0, 0, 0 };
+    SamplerSeen s = { 0, 0, 0, 0, 0, 0, 0, 0 };
     const u32 holder = rd32(SLOT_TABLE + slot * 4u);
     if ((holder & 3u) || !in_ddr(holder, 8)) s.bad = 1;
     u32 object = 0;
@@ -224,38 +227,27 @@ static void sampler_refresh(u32 slot) {
     if (!s.bad) {
         s.data = rd32(object);
         s.frames = rd32(object + OFF_FRAMES);
+        s.words = rd32(object + OFF_WORDS);
         s.stereo = rd8(object + OFF_STEREO);
         if (s.data != POOL + slot * POOL_STRIDE) s.bad = 3;
-        else if (s.stereo > 1u) s.bad = 4;
+        else s.bad = (u32)sampler_region(s.frames, s.words, s.stereo, &s.first, &s.end);   // 0, 4 (stereo) or 6 (empty)
     }
-    if (!s.bad) {
-        const u32 most = s.stereo ? (u32)POOL_FRAMES_STEREO : (u32)POOL_FRAMES_MONO;   // never past the pool
-        if (s.frames > most) s.frames = most;
-        const u32 first = s.stereo ? 4u : 8u;                                         // past the 16-byte pad
-        if (s.frames < first + 2u) s.bad = 5;
-        else {
-            s.sum = pool_sum(s.data, s.frames << (s.stereo ? 2 : 1));
-            s.end = s.frames;
-        }
-    }
+    if (!s.bad) s.sum = pool_sum(s.data, s.end << (s.stereo ? 2 : 1));
     SamplerSeen& was = sampler_seen[slot];
     if (s.bad) {
-        if (was.bad != s.bad) op1f_log(2, LOG_FILE, 5, "veffgranular: sampler source of synth %u not valid (check %u)", slot + 1, s.bad);
+        if (was.bad != s.bad) {
+            if (s.bad == (u32)SAMPLER_EMPTY) op1f_log(3, LOG_FILE, 5, "veffgranular: the sampler of synth %u holds no sample (words %u)", slot + 1, s.words);
+            else op1f_log(2, LOG_FILE, 5, "veffgranular: sampler source of synth %u not valid (check %u)", slot + 1, s.bad);
+        }
         sampler_src[slot].valid = 0;
         was = s;
         return;
     }
-    if (sampler_src[slot].valid && was.data == s.data && was.frames == s.frames && was.stereo == s.stereo && was.sum == s.sum) return;
-    // changed (or first seen): the real end is where the zeroed tail starts
-    const volatile short* d = (const volatile short*)s.data;
-    const u32 ch = s.stereo ? 2u : 1u, first = s.stereo ? 4u : 8u;
-    u32 end = s.frames;
-    while (end > first + 2u && d[(end - 1u) * ch] == 0 && d[(end - 1u) * ch + ch - 1u] == 0) --end;
-    if (end < first + 2u) end = s.frames;            // all silent: the whole buffer
-    s.end = end;
-    source_publish(&sampler_src[slot], (const short*)s.data, s.frames, s.stereo, first, end, 60, 65536);
-    if (was.data != s.data || was.frames != s.frames || was.stereo != s.stereo)
-        op1f_log(3, LOG_FILE, 6, "veffgranular: sampler source of synth %u: %u frames (%u sounding), %s", slot + 1, s.frames, end, s.stereo ? "stereo" : "mono");
+    if (sampler_src[slot].valid && was.data == s.data && was.frames == s.frames && was.words == s.words && was.stereo == s.stereo && was.sum == s.sum) return;
+    // changed (or first seen): the sample is what the last load, drop or recording wrote
+    source_publish(&sampler_src[slot], (const short*)s.data, s.end, s.stereo, s.first, s.end, 60, 65536);
+    if (was.bad || was.data != s.data || was.words != s.words || was.stereo != s.stereo)
+        op1f_log(3, LOG_FILE, 6, "veffgranular: sampler source of synth %u: frames %u to %u of %u, %s", slot + 1, s.first, s.end, s.frames, s.stereo ? "stereo" : "mono");
     was = s;
 }
 
@@ -368,6 +360,7 @@ static void paint_art(void* c, u32 where, const GrainSource& s, int values[8], i
         if (files.error == 101) q = put(q, "NO MEMORY FOR A SAMPLE");
         else if (files.error == 102) q = put(q, "FILE OVER 4 MB");
         else if (files.error && files.error < 100u) { q = put(q, "FILE NOT TAKEN: "); q = put(q, sfile::ERROR_TEXT[files.error < 9u ? files.error : 2u]); }
+        else if (sampler_on && sampler_seen[slot].bad == (u32)SAMPLER_EMPTY) { q = put(q, "SAMPLER "); q = put_number(q, (int)slot + 1); q = put(q, " EMPTY: DROP IN THE SAMPLER"); }
         else { q = put(q, "NO SAMPLE: PUT "); q = put_number(q, (int)set_file[slot]); q = put(q, ".WAV IN VEFFGRANULAR"); }
         text(c, VEFF_MID_X - (text_width(line, 2, 2) >> 1), Y - 4, line, on ? VEFF_PINK : VEFF_GREY, 2, 2);
         return;
@@ -455,7 +448,7 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
     if (!fr.started) {
         fr.started = 1;
         for (u32 p = 0; p < (u32)SLOTS; ++p) { set_file[p] = 1; }
-        op1f_log(3, LOG_FILE, 8, "veffgranular: ready; files 1..8 in the folder veffgranular; sampler source off unless sampler.on");
+        op1f_log(3, LOG_FILE, 8, "veffgranular: ready; the synth sampler's sample of each slot, else files 1..8 in the folder veffgranular; sampler.off there switches the sampler source off");
     }
     // the kept values of every sound that rides the engine
     const u32 riding = (u32)op1f_riding(CARD, ASK_ENGINE) & 0xffu;

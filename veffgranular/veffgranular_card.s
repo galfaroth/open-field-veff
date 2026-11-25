@@ -24,7 +24,7 @@ op1f_card_veffgranular_level:
 .global op1f_card_veffgranular
 .type op1f_card_veffgranular, STT_OBJECT
 op1f_card_veffgranular:
-    .long 0x44524143, 64, 10, 1
+    .long 0x44524143, 64, 10, 2
     .ascii "veffgranular"
     .fill 4, 1, 0
     .long veffgranular_frame
@@ -106,9 +106,70 @@ op1f_card_veffgranular_ask_0:
     .long 0
     .long 100
     .long 80
-    .long 0
-    .long 0
+    .long 4
+    .long op1f_card_veffgranular_ask_0_sounds
 .size op1f_card_veffgranular_ask_0, .-op1f_card_veffgranular_ask_0
+.global op1f_card_veffgranular_ask_0_sounds
+.type op1f_card_veffgranular_ask_0_sounds, STT_OBJECT
+op1f_card_veffgranular_ask_0_sounds:
+    .ascii "pad"
+    .fill 21, 1, 0
+    .long op1f_card_veffgranular_ask_0_sound_0
+    .long 415
+    .ascii "freeze"
+    .fill 18, 1, 0
+    .long op1f_card_veffgranular_ask_0_sound_1
+    .long 415
+    .ascii "shards"
+    .fill 18, 1, 0
+    .long op1f_card_veffgranular_ask_0_sound_2
+    .long 411
+    .ascii "scan"
+    .fill 20, 1, 0
+    .long op1f_card_veffgranular_ask_0_sound_3
+    .long 409
+.size op1f_card_veffgranular_ask_0_sounds, .-op1f_card_veffgranular_ask_0_sounds
+.global op1f_card_veffgranular_ask_0_sound_0
+.type op1f_card_veffgranular_ask_0_sound_0, STT_OBJECT
+op1f_card_veffgranular_ask_0_sound_0:
+    .ascii "{\042op1f_engine\042: \042veffgranular\042, \042adsr\042: [9000, 12000, 26000, 16000, 4000, 4800, "
+    .ascii "18432, 23909], \042fx_active\042: true, \042fx_params\042: [12000, 9000, 16000, 14000, 0, 0,"
+    .ascii " 0, 0], \042fx_type\042: \042spring\042, \042knobs\042: [9830, 25558, 27852, 11468, 17367, 22937, "
+    .ascii "16384, 26214], \042lfo_active\042: false, \042lfo_params\042: [9280, 32606, 1296, 9200, 0, 0"
+    .ascii ", 0, 0], \042lfo_type\042: \042value\042, \042name\042: \042pad\042, \042octave\042: 0, \042synth_version\042: 3, \042t"
+    .ascii "ype\042: \042dsynth\042}"
+.size op1f_card_veffgranular_ask_0_sound_0, .-op1f_card_veffgranular_ask_0_sound_0
+.global op1f_card_veffgranular_ask_0_sound_1
+.type op1f_card_veffgranular_ask_0_sound_1, STT_OBJECT
+op1f_card_veffgranular_ask_0_sound_1:
+    .ascii "{\042op1f_engine\042: \042veffgranular\042, \042adsr\042: [1500, 10000, 28000, 9000, 4000, 4800, 1"
+    .ascii "8432, 23909], \042fx_active\042: false, \042fx_params\042: [10000, 12000, 8000, 16000, 0, 0,"
+    .ascii " 0, 0], \042fx_type\042: \042delay\042, \042knobs\042: [13107, 18022, 22937, 983, 16384, 8192, 163"
+    .ascii "84, 26214], \042lfo_active\042: false, \042lfo_params\042: [9280, 32606, 1296, 9200, 0, 0, 0"
+    .ascii ", 0], \042lfo_type\042: \042value\042, \042name\042: \042freeze\042, \042octave\042: 0, \042synth_version\042: 3, \042t"
+    .ascii "ype\042: \042dsynth\042}"
+.size op1f_card_veffgranular_ask_0_sound_1, .-op1f_card_veffgranular_ask_0_sound_1
+.global op1f_card_veffgranular_ask_0_sound_2
+.type op1f_card_veffgranular_ask_0_sound_2, STT_OBJECT
+op1f_card_veffgranular_ask_0_sound_2:
+    .ascii "{\042op1f_engine\042: \042veffgranular\042, \042adsr\042: [64, 9000, 24000, 5000, 4000, 4800, 1843"
+    .ascii "2, 23909], \042fx_active\042: true, \042fx_params\042: [10000, 12000, 9000, 13000, 0, 0, 0, "
+    .ascii "0], \042fx_type\042: \042delay\042, \042knobs\042: [6553, 3932, 6553, 26214, 16384, 29490, 16384, "
+    .ascii "26214], \042lfo_active\042: false, \042lfo_params\042: [9280, 32606, 1296, 9200, 0, 0, 0, 0]"
+    .ascii ", \042lfo_type\042: \042value\042, \042name\042: \042shards\042, \042octave\042: 0, \042synth_version\042: 3, \042type\042"
+    .ascii ": \042dsynth\042}"
+.size op1f_card_veffgranular_ask_0_sound_2, .-op1f_card_veffgranular_ask_0_sound_2
+.global op1f_card_veffgranular_ask_0_sound_3
+.type op1f_card_veffgranular_ask_0_sound_3, STT_OBJECT
+op1f_card_veffgranular_ask_0_sound_3:
+    .ascii "{\042op1f_engine\042: \042veffgranular\042, \042adsr\042: [600, 10000, 30000, 7000, 4000, 4800, 18"
+    .ascii "432, 23909], \042fx_active\042: false, \042fx_params\042: [10000, 12000, 8000, 16000, 0, 0, "
+    .ascii "0, 0], \042fx_type\042: \042delay\042, \042knobs\042: [0, 14745, 21299, 1638, 24575, 9830, 16384, "
+    .ascii "26214], \042lfo_active\042: false, \042lfo_params\042: [9280, 32606, 1296, 9200, 0, 0, 0, 0]"
+    .ascii ", \042lfo_type\042: \042value\042, \042name\042: \042scan\042, \042octave\042: 0, \042synth_version\042: 3, \042type\042: "
+    .ascii "\042dsynth\042}"
+.size op1f_card_veffgranular_ask_0_sound_3, .-op1f_card_veffgranular_ask_0_sound_3
+.balign 4
 .global op1f_card_veffgranular_ask_1
 .type op1f_card_veffgranular_ask_1, STT_OBJECT
 op1f_card_veffgranular_ask_1:

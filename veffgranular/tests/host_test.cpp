@@ -9,6 +9,7 @@
 #include <string>
 #include "../granular_core.h"
 #include "../sample_file.h"
+#include "../sampler_region.h"
 
 using namespace gran;
 static int failures = 0;
@@ -282,6 +283,50 @@ int main(int argc, char** argv) {
             std::free(heap);
         }
         std::printf("reader: 4 good files, every cut of them, 20000 random files\n");
+    }
+
+    // ---- the sampler's region, from the fields a probe pack printed on a unit
+    {
+        struct { unsigned frames, words, stereo; int want; unsigned first, end; } T[] = {
+            { 264608, 0, 1, SAMPLER_EMPTY, 0, 0 },            // a slot nothing was put in
+            { 264608, 0, 0, SAMPLER_EMPTY, 0, 0 },
+            { 264600, 0, 1, SAMPLER_EMPTY, 0, 0 },            // a load under way
+            { 264600, 8, 0, SAMPLER_EMPTY, 0, 0 },            // the head pad alone
+            { 264600, 9, 0, SAMPLER_EMPTY, 0, 0 },            // one frame
+            { 264600, 16392, 0, SAMPLER_OK, 8, 16392 },       // a drop of 16,384 mono frames
+            { 264600, 65544, 0, SAMPLER_OK, 8, 65544 },
+            { 264600, 176408, 0, SAMPLER_OK, 8, 176408 },
+            { 264600, 264600, 0, SAMPLER_OK, 8, 264600 },     // full, mono
+            { 264600, 529200, 1, SAMPLER_OK, 4, 264600 },     // full, stereo
+            { 264600, 529200, 0, SAMPLER_OK, 8, 264600 },     // mono never past the frames the object says
+            { 264600, 0xffffffffu, 1, SAMPLER_OK, 4, 264600 },// a wild count never leaves the pool
+            { 264600, 0xffffffffu, 0, SAMPLER_OK, 8, 264600 },
+            { 100, 529200, 1, SAMPLER_OK, 4, 100 },
+            { 5, 529200, 1, SAMPLER_EMPTY, 0, 0 },
+            { 264600, 20000, 2, SAMPLER_BAD_STEREO, 0, 0 },
+            { 264600, 20001, 1, SAMPLER_OK, 4, 10000 },       // an odd count of words, stereo: the half frame is left out
+        };
+        for (auto& t : T) {
+            unsigned first = 99, end = 99;
+            const int got = sampler_region(t.frames, t.words, t.stereo, &first, &end);
+            CHECK(got == t.want && first == t.first && end == t.end, "sampler region frames %u words %u stereo %u: %d, %u..%u", t.frames, t.words, t.stereo, got, first, end);
+            if (got == SAMPLER_OK) {                          // what the pack publishes passes the render's own checks
+                GrainSource g = { (const short*)&T, end, t.stereo, first, end, 60, 65536, 1, 1 };
+                CHECK(grain_source_ok(g), "a sampler region the render would refuse");
+                CHECK((unsigned long long)end * (t.stereo ? 2u : 1u) <= (unsigned long long)SAMPLER_POOL_WORDS, "a sampler region past the pool");
+            }
+        }
+        unsigned rs = 7, bad = 0;
+        for (int i = 0; i < 200000; ++i) {
+            rs = rs * 1664525u + 1013904223u; const unsigned frames = (rs >> 8) % 600000u;
+            rs = rs * 1664525u + 1013904223u; const unsigned words = (i & 7) ? (rs >> 6) % 1100000u : rs;
+            const unsigned stereo = i & 1u;
+            unsigned first, end;
+            if (sampler_region(frames, words, stereo, &first, &end) != SAMPLER_OK) continue;
+            if (!(first + 2u <= end && end <= frames && end * (stereo ? 2u : 1u) <= (unsigned)SAMPLER_POOL_WORDS && end * (stereo ? 2u : 1u) <= words)) ++bad;
+        }
+        CHECK(!bad, "%u random sampler regions out of bounds", bad);
+        std::printf("sampler region: 17 cases from the probe's lines, 200000 random ones\n");
     }
 
     // ---- the cost: the most grains a voice held at once, and the worst block's grain-frames

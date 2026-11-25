@@ -128,9 +128,9 @@ times feedback.
 
 A granular sample synth, in the unit's own list of **engines** (shift and T1 on a synth sound), in the spirit of Granulator III. Each key plays grains of one sample, pitched from the note against the sample's root (C4 unless the file says otherwise). Stereo out, six voices, up to four grains a voice (three with a stereo sample). Built for open-field 0.14 (base level 10).
 
-**What was tried on a unit** (one unit, OS 1.7.3, open-field 0.19): the pack loads, the engine shows in the list and plays, its page stands in, and the cost of a render was measured with no sample loaded. The probe pack confirmed where the synth sampler keeps each slot's sample. Playing a sampler's sample as grains has been switched on on that unit but not yet reported back; the sound of the grains was tested on a computer.
+**Version 2 has not been tried on a unit.** What was tried is version 1 (one unit, OS 1.7.3, open-field 0.19): the pack loads, the engine shows in the list and plays, its page stands in, and the cost of a render was measured with no sample loaded. The probe pack confirmed where the synth sampler keeps each slot's sample. Playing a sampler's sample as grains has been switched on on that unit but not yet reported back; the sound of the grains was tested on a computer.
 
-**The intended way to work** is the sampler's: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` and play that same sample as grains. That needs the engine to read the sample the synth sampler holds for the sound's slot. A way to do it was found by reading the firmware on a computer and confirmed by a probe pack on one unit. It is built in, and **off** until you switch it on with a file (below). Until then the engine plays a file from its own folder.
+**The way to work is the sampler's**: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` (shift and T1) and play that same sample as grains. The engine reads the sample the synth sampler holds for the sound's slot, in place. Where that sample lies was read in the firmware on a computer and confirmed by a probe pack on one unit. From version 2 this is the default; a slot with no sample falls back to a file from the pack's folder.
 
 | Mode (press the 1st knob) | What the grains do |
 | --- | --- |
@@ -148,7 +148,25 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 - The eight knob values are kept by the unit with the sound. Mode, window, loop length and file number are kept with the sound too (level 7, `veffgranular_set`).
 - The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays. The tag beside the title is the mode, or `SHIFT` while shift is held. Top right: the source, the window and (loop) the loop's length.
 
-### The sample from a file in the pack's folder
+### The sample from the synth sampler (the default)
+
+1. On the synth sound you want, pick `sampler` (shift and T1) and give it a sample as always: drop a lifted cut, record, or load a sound.
+2. Pick `veffgranular` on the same sound. The page's top right says `SAMPLER` and the slot's number, and the overview is the sample.
+3. For new material go back to `sampler`, drop or record, and return.
+
+- OS 1.7.3+0 only, read only. When a check fails (another firmware, an address that does not look right) the file source plays instead.
+- The length is what the sampler says the last drop, recording or load wrote, so a short drop plays as a short sample, with nothing of an older sample behind it.
+- A slot the sampler holds nothing in says `SAMPLER n EMPTY: DROP IN THE SAMPLER` (unless a file plays).
+- To switch this source off and play files only, put a file named `sampler.off` (any content) in the folder `veffgranular`. A `sampler.on` left from version 1 does nothing.
+
+What is not known or not yet possible:
+
+- The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts.
+- The sampler's own start, end and loop points and root note are not found yet: the engine uses all of what was dropped or recorded and C4 as the root. Use position and tune.
+- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
+- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+
+### The sample from a file in the pack's folder (when the slot's sampler is empty, or with `sampler.off`)
 
 1. Connect the unit in disk mode. Next to `synth`, `drum` and `tapes` there is a folder `veffgranular`.
 2. Put a sample in it, named with its number first: `1.wav`, `2 pad.aif`, and so on, up to `8`. WAV or AIFF/AIFC (`NONE` or `sowt`), 16, 24 or 32-bit PCM, mono or stereo, 8 to 192 kHz. At most 4 MiB (about 47 s mono or 23 s stereo at 16-bit, 44.1 kHz). A `smpl` (WAV) or `INST` (AIFF) chunk sets the root note.
@@ -156,17 +174,9 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 
 With no file, a file that isn't one of these, or no memory for it, the engine is silent and the page says why. Only one file is in memory at a time.
 
-### The sample from the synth sampler (switched on by a file)
+### Its own sounds
 
-The source that reads the synth sampler's sample of the sound's slot is in the pack, OS 1.7.3+0 only, and **off** until you switch it on: put a file named `sampler.on` (any content) in the `veffgranular` folder; take it out to switch it off. While it is on and its checks pass, the engine plays the sampler's sample; when they fail (another firmware, an address that does not look right), the file source plays as before. The flow is then: switch the sound to `sampler` to drop, record or trim, then back to `veffgranular` to play it.
-
-What is not known or not yet possible:
-
-- The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts. It also showed that an empty slot and the length of what was dropped can be told apart.
-- There is no drop on the engine's own page: the engine stands on `dsynth`, which takes none. Switch to `sampler`, drop, switch back.
-- The sampler's own start, end and loop points and root note are not found yet: the engine uses the whole recording (up to where its zeroed tail begins) and C4 as the root. Use position and tune.
-- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
-- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+Four sounds come with the pack and show in the sound list after the next start, in a folder `veffgranular`: `pad`, `freeze`, `shards` and `scan`. They are knob settings, envelopes and an effect only: a sound file cannot carry a sample, so each plays whatever the slot's sampler holds.
 
 ### Cost
 
