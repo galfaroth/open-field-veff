@@ -105,3 +105,83 @@ be per-key small settings, such as groups.
 
 v2 of the probe logs each changed key record of the current slot (`key S.K` plus 8 words) and the record index of
 each voice (`voice keys`).
+
+## 6. After probe v2 on the unit: the key record, settled
+
+The table at `0x84a03cc8 + slot·0x300 + key·0x20` is confirmed on the unit. Kits were loaded into slot 1 (current
+slot 0); a load rewrites all 24 records about 0.5 s after the slot's `words` changes. `voice keys` followed the keys
+played (index 4 = key 5, 12 = key 13). The owner turned start, end, pitch, mode and volume on key 5; each turn moved
+exactly one word:
+
+| Word | Knob | Meaning and scale | Confidence |
+| --- | --- | --- | --- |
+| +0 | pitch | Signed semitones in the top 7 bits (`>>25`; `0x18000000` = +12, `0x1a000000` = +13, `ff21…` = −1 plus a fine part); the low 25 bits are the fine part (a step of `0x52bf5`). 0 = no transposition. | high |
+| +4 | start | Q31 fraction of the capacity (below) | high |
+| +8 | end | Q31 fraction of the capacity. Key n's end is about key n+1's start minus one unit (`0x0000962d`, one frame). | high |
+| +0xc | mode | Play mode in the top 3 bits: `0x10…` = 0, `0x30…` = 1 (the default), `0x50…` = 2, `0x70…` = 3. The lower bits are the knob's position between steps (`43fb0000` was seen during the turn). The render's mode 3 also reads voice+0x2c. Which name goes with which number (one-shot, gate, loop …) was not tested. | high for the encoding, low for the names |
+| +0x10 | (not turned) | `0x20000000` on every key of every kit; the render takes its low 2 bits and top 2 bits. Most likely direction/reverse with "forward" = `0x20000000`. No reversed key was seen. | low |
+| +0x14 | (not turned) | **Pan**, not volume. It feeds the pan law `0x8f0137ec`. `0x40000000` = centre, `0x00000001` / `0x7ffe0001` = hard left/right. Bit 0 selects the second pan law (a kit-wide setting: some kits have it on every key). | medium-high |
+| +0x18 | — | 0 everywhere | — |
+| +0x1c | volume | `0x20000000` is the default (likely unity, 1.0 in Q29); kits carry per-key values from `0x15c6…` to `0x3ae5…`. | high for the knob, medium for unity |
+
+Section 2's guesses for +0x10 and +0x14 are superseded by this table.
+
+**What the fractions are fractions of (high for stereo).**
+- The render multiplies each fraction by the capacity from `0x8f0137c0`: 882000 frames when the stereo byte is set,
+  529200 when it is clear (mono not seen on the unit; medium).
+- Check against the slot's `words` (= 2·frames + 8 for stereo): the four stereo kits had 810099, 859953, 750870 and
+  869581 frames. Key 24's end × 882000 / 2^31 gives 810082, 859932, 750849 and 869566.
+- So key 24 ends about 17–21 frames before the last frame written, and **frame f = fraction × 882000 / 2^31**.
+- In the other direction: fraction = f × 2^31 / 882000, about 2434.8 units a frame. Compute it as
+  `(f << 31) / 882000` in 64 bits, or as `f × 2434 + (f × 0.8…)`; a 32-bit `f × 2435` overflows past 881k frames.
+- The kit file's ×4058 scale is the file format only; it never appears in memory.
+
+**`0x11904700..` (v1 `w` lines).** Not traced further. They are not start, end, pitch, mode or volume.
+
+## 7. Design: the chop pack `veffchop` (no code yet)
+
+**Aim.** Chop the current drum slot's sample into 24 slices — equal, lazy (onsets with a minimum gap) or transient —
+and write them as the kit's 24 start/end points, the way OP-XY does.
+
+**What it writes, and nothing else.** For the current slot `s = [0x84a01528]` (0..7), and for keys k = 0..23:
+- +4 (start) and +8 (end) of `0x84a03cc8 + s·0x300 + k·0x20`, as Q31 fractions of the capacity (`f·2^31/882000`
+  stereo, `/529200` mono).
+- Never pitch, mode, pan or volume: the kit keeps its other settings.
+- No firmware code changes (0 stock changes).
+
+**Where the frames come from.** Read only, through the chain confirmed here:
+- object = `[[0x0802f0ac + 4s]]`, data = `[object]`, `words = [object+0xd76c]`, stereo = byte `[object+0xd770]`;
+- the sample's own length is `(words − 8) / 2` frames for stereo and `words − 8` for mono (mono unverified);
+- int16 data from data+16 (the head pad).
+- Equal mode needs only the length. Lazy and transient need an energy envelope over the data; read it in bounded
+  pieces (for example 4096 frames a frame tick) so one frame never takes long.
+
+**When and on which thread.**
+- On the display thread (the base's frame function), when the owner asks: a key combination or the pack's own page
+  (level 2+ if a page is wanted; level 1 can only react to existing state).
+- Analysis spreads over frames; the 48 words are written in one frame.
+- The audio thread re-copies each record into its scratch block every block, so no refresh call is needed. A voice
+  already sounding keeps its old points until the next block, then reads the new ones.
+- Write start before end only when the new start is lower than the old end, otherwise end first, so a block that
+  reads half an update never sees start > end. The render asserts both ≥ 0, and the stock edit keeps a minimum length
+  of `0x00100000`.
+
+**Guards.**
+- Slot index < 8.
+- Every address range-checked as in the probe: table inside DDR, object of 0xd774 bytes, frames ≤ capacity.
+- Refuse when `words` is 0 or below a minimum (no sample), or the stereo byte is not 0/1.
+- Refuse while a load is in flight: `words` must be unchanged over 2 checks about 0.5 s apart (the probe saw the
+  records rewritten ~0.5 s after `words` changed). Re-read `words` just before writing.
+- Clamp every fraction to [0, 0x7fffffff] and keep end − start ≥ `0x00100000`.
+- Write only when the owner asks, never on its own, so a kit load is never overwritten silently.
+
+**Saving the kit.**
+- The table-to-JSON walker (`0x8d4f4840`..`0x8d4f4c00`) builds the kit's JSON from these records, so a stock save of
+  the kit (or the stock save at power-off/sound change) should carry the new slices.
+- Medium: the path from "save" to the walker has not been traced. Test on the unit: chop, save as a new kit, power
+  cycle, reload it, and compare the `key` lines.
+- If the save does not carry them, the fallback is the JSON tree at `0x0802377c + s·0x34` plus a stock save, not the
+  reload `0x8d4ebc68`: that reloads the sample too.
+
+**Not in v1 of the pack.** Mono kits until a mono kit is seen with the probe; the d-box kind; drop-then-chop as one
+action (the drop's own writes to the records were not traced).
