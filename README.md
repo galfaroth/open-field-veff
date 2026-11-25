@@ -1,6 +1,6 @@
 # Veff packs for open-field
 
-Effects for the OP-1 Field, as packs for [open-field](https://github.com/LaP0573/open-field) (OS 1.7.3, base 30, level 10).
+Effects for the OP-1 Field, as packs for [open-field](https://github.com/LaP0573/open-field) (OS 1.7.3, level 10; veffgraindelay and veffgranular were built for open-field 0.14 and tried on base 37, release 0.19).
 
 - Each effect appears in the unit's own lists of effects: shift and T3 on a sound, and the master's list on the mixer.
 - Each effect also appears on every wagon of fx train.
@@ -17,13 +17,19 @@ Cycles are per block (64 frames, stereo), measured on a unit. The effect limit i
 | veffshaper | A parametric waveshaper. Knobs: drive, curve, depth, mix. With shift held: lin, damp, period, output. | `punch` | ~27,000-33,000 average | [`veffshaper.pack`](veffshaper.pack) |
 | veffurator | A saturator, 2x oversampled. Knobs: drive, type (analog, sine, medium, hard, fold, digital), output, mix. With shift held: color, freq, clip, dc. | `punch` | ~54,000 average | [`veffurator.pack`](veffurator.pack) |
 | veffrrrr | A two-stage distortion in serial routing. Knobs: drive, s1, s2, mix. With shift held: four sub-pages (s1, s2, fb, out); shift and a press of the 1st knob steps between them. Mix starts at 15%. | `nitro` | ~61,000-65,000 average; 82,000-86,000 at heavy settings (a cheaper version is in progress) | [`veffrrrr.pack`](veffrrrr.pack) |
-| veffgraindelay | A grain delay in the spirit of Grain Delay: grains read from a stereo delay line, each with its own place and pitch. Knobs: pitch, spray, feedback, mix. With shift held: delay (note or ms), freq, random, spread, reverse. Starts as an octave-up shimmer on the eighth note. **Not yet tried on a unit.** | `delay` | estimate, not measured: ~30,000-43,000; worst ~53,000 (declared 56,000) | [`veffgraindelay.pack`](veffgraindelay.pack) |
+| veffgraindelay | A grain delay in the spirit of Grain Delay: grains read from a stereo delay line, each with its own place and pitch. Knobs: pitch, spray, feedback, mix. With shift held: delay (note or ms), freq, random, spread, reverse. Starts as an octave-up shimmer on the eighth note. | `delay` | ~23,000-26,000 average, 34,769 at most in a first session (declared 56,000) | [`veffgraindelay.pack`](veffgraindelay.pack) |
+
+One engine too: **veffgranular**, a granular sample synth in the unit's list of engines ([below](#engine-veffgranular)). File: [`veffgranular.pack`](veffgranular.pack).
 
 ## Controls
 
 Every effect uses the four knobs: blue, ochre, grey and red, in that order. Holding shift turns the knobs to a second set of values, which the sound keeps when you save it. The page always shows the set you are turning; on the shift set, a pink tag next to the title says so.
 
+The pictures are rendered on a computer from each pack's own drawing code, at typical settings, scaled 2x.
+
 ### veffbode
+
+<img src="pictures/veffbode.png" alt="veffbode" width="480">
 
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
@@ -35,6 +41,8 @@ Every effect uses the four knobs: blue, ochre, grey and red, in that order. Hold
 
 ### veffrosion
 
+<img src="pictures/veffrosion.png" alt="veffrosion" width="480">
+
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
 | Knobs | freq (30 Hz..18 kHz) | width (the noise's band) | amount (the depth of the wobble) | mix |
@@ -43,6 +51,8 @@ Every effect uses the four knobs: blue, ochre, grey and red, in that order. Hold
 - A press of the 1st knob sets freq back to 1 kHz, the 4th sets mix to 0.
 
 ### veffshaper
+
+<img src="pictures/veffshaper.png" alt="veffshaper" width="480">
 
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
@@ -54,6 +64,8 @@ Every effect uses the four knobs: blue, ochre, grey and red, in that order. Hold
 
 ### veffurator
 
+<img src="pictures/veffurator.png" alt="veffurator" width="480">
+
 | | Blue | Ochre | Grey | Red |
 | --- | --- | --- | --- | --- |
 | Knobs | drive (-36..+36 dB) | type (analog, sine, medium, hard, fold, digital) | output (-36..0 dB) | mix |
@@ -63,6 +75,8 @@ Every effect uses the four knobs: blue, ochre, grey and red, in that order. Hold
 - With shift, a press of the 1st, 3rd or 4th knob switches color, clip or dc off and on.
 
 ### veffrrrr
+
+<img src="pictures/veffrrrr.png" alt="veffrrrr" width="480">
 
 The signal runs drive and tilt → stage 1 → stage 2 → output, with a feedback loop back to the input. Each stage is a shaper followed by a filter.
 
@@ -85,7 +99,9 @@ With shift held there are **four pages**. **Shift and a press of the 1st knob st
 
 ### veffgraindelay
 
-Not yet tried on a unit: built and tested on a computer only.
+<img src="pictures/veffgraindelay.png" alt="veffgraindelay" width="480">
+
+Tried on one unit (OS 1.7.3, open-field 0.19): it loads, shows in the lists and on a wagon, and its cost was measured over a short session. Its sound across the settings was checked on a computer.
 
 Incoming sound goes into a stereo delay line (2.97 s). Grains read from it: a new grain starts every 1/freq and lasts
 two of those, so two always overlap and their smooth windows add up to one. Each grain gets, when it starts, its own
@@ -106,37 +122,63 @@ times feedback.
   the delay. When a long grain at a high pitch would not fit in the line, the grains get shorter (a higher freq).
 - The shortest delay is 2.9 ms (0 ms and 1 ms play as 2.9 ms).
 
-## Pages
+## Engine: veffgranular
 
-Rendered on a computer from each pack's own drawing code, at typical settings, scaled 2x.
+<img src="pictures/veffgranular.png" alt="veffgranular" width="480">
 
-**veffbode**
+A granular sample synth, in the unit's own list of **engines** (shift and T1 on a synth sound), in the spirit of Granulator III. Each key plays grains of one sample, pitched from the note against the sample's root (C4 unless the file says otherwise). Stereo out, six voices, up to four grains a voice (three with a stereo sample). Built for open-field 0.14 (base level 10).
 
-<img src="pictures/veffbode.png" alt="veffbode" width="480">
+**What was tried on a unit** (one unit, OS 1.7.3, open-field 0.19): the pack loads, the engine shows in the list and plays, its page stands in, and the cost of a render was measured with no sample loaded. The probe pack confirmed where the synth sampler keeps each slot's sample. Playing a sampler's sample as grains has been switched on on that unit but not yet reported back; the sound of the grains was tested on a computer.
 
-**veffrosion**
+**The intended way to work** is the sampler's: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` and play that same sample as grains. That needs the engine to read the sample the synth sampler holds for the sound's slot. A way to do it was found by reading the firmware on a computer and confirmed by a probe pack on one unit. It is built in, and **off** until you switch it on with a file (below). Until then the engine plays a file from its own folder.
 
-<img src="pictures/veffrosion.png" alt="veffrosion" width="480">
+| Mode (press the 1st knob) | What the grains do |
+| --- | --- |
+| classic | start at the position (moved by scan), each pushed by a random spray |
+| loop | follow a play head that loops a short region from the position: free (four grains long) or 1/16, 1/8, 1/4, 1/2, 1 or 2 bars of the tempo (press the 3rd knob) |
+| cloud | as classic, but each grain's spacing, size, pitch and pan are random, and the spray is never under a sixteenth of the sample |
 
-**veffshaper**
+| | Blue | Ochre | Grey | Red |
+| --- | --- | --- | --- | --- |
+| Knobs | position (0..100% of the sample) | size (5 ms..1 s) | density (0.5..5 grains at once) | spray (0..2 s around the position) |
+| Shift held | scan (-2x..+2x: the position travels through the sample, backwards below 0) | spread (pan and a little detune between grains) | tune (-24..+24 semitones) | volume |
 
-<img src="pictures/veffshaper.png" alt="veffshaper" width="480">
+- Presses without shift: 1st the mode, 2nd the window (soft, flat, pluck, tri), 3rd the loop's length, 4th the next file (1..8).
+- With shift, a press puts its value back: scan 0, spread 30, tune 0, volume 80.
+- The eight knob values are kept by the unit with the sound. Mode, window, loop length and file number are kept with the sound too (level 7, `veffgranular_set`).
+- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays. The tag beside the title is the mode, or `SHIFT` while shift is held. Top right: the source, the window and (loop) the loop's length.
 
-**veffurator**
+### The sample from a file in the pack's folder
 
-<img src="pictures/veffurator.png" alt="veffurator" width="480">
+1. Connect the unit in disk mode. Next to `synth`, `drum` and `tapes` there is a folder `veffgranular`.
+2. Put a sample in it, named with its number first: `1.wav`, `2 pad.aif`, and so on, up to `8`. WAV or AIFF/AIFC (`NONE` or `sowt`), 16, 24 or 32-bit PCM, mono or stereo, 8 to 192 kHz. At most 4 MiB (about 47 s mono or 23 s stereo at 16-bit, 44.1 kHz). A `smpl` (WAV) or `INST` (AIFF) chunk sets the root note.
+3. Leave disk mode. Each sound plays file 1 until you press the 4th knob to pick another. The file is read when a sound that plays the engine needs it, and again each time disk mode closes.
 
-**veffrrrr**
+With no file, a file that isn't one of these, or no memory for it, the engine is silent and the page says why. Only one file is in memory at a time.
 
-<img src="pictures/veffrrrr.png" alt="veffrrrr" width="480">
+### The sample from the synth sampler (switched on by a file)
 
-**veffgraindelay**
+The source that reads the synth sampler's sample of the sound's slot is in the pack, OS 1.7.3+0 only, and **off** until you switch it on: put a file named `sampler.on` (any content) in the `veffgranular` folder; take it out to switch it off. While it is on and its checks pass, the engine plays the sampler's sample; when they fail (another firmware, an address that does not look right), the file source plays as before. The flow is then: switch the sound to `sampler` to drop, record or trim, then back to `veffgranular` to play it.
 
-<img src="pictures/veffgraindelay.png" alt="veffgraindelay" width="480">
+What is not known or not yet possible:
+
+- The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts. It also showed that an empty slot and the length of what was dropped can be told apart.
+- There is no drop on the engine's own page: the engine stands on `dsynth`, which takes none. Switch to `sampler`, drop, switch back.
+- The sampler's own start, end and loop points and root note are not found yet: the engine uses the whole recording (up to where its zeroed tail begins) and C4 as the root. Use position and tune.
+- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
+- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+
+### Cost
+
+The unit's limit for an engine is 40,000 cycles a voice's render; veffgranular declares 40,000. Measured on a unit with no sample loaded only: 7,300 cycles on average and 13,432 at most, never over. With a sample it is **not measured yet**. The estimate from the compiled inner loop: about 60 instructions a grain-frame with a stereo sample (45 mono), plus the reads of the sample in the unit's main memory, so about 30,000-36,000 cycles a render at the grain cap (3 stereo or 4 mono grains through the whole block). The worst case is cloud or high density at a high note with a stereo sample: the grains read far apart and each read can miss the cache. If the log's `engine: 'veffgranular' this period:` line shows renders over the declared cost, lower `ACTIVE_MOST_STEREO` / `ACTIVE_MOST_MONO` in `granular_core.h`.
+
+### Tested on a computer
+
+`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones.
 
 ## Thumbnails
 
-`thumbs/<name>.png`: each effect's shape alone, 300×240 with transparency, for the catalog. veffgraindelay has none yet.
+`thumbs/<name>.png`: each pack's shape alone, 300×240 with transparency, for the catalog.
 
 ## Install
 
@@ -164,3 +206,6 @@ sh veff/veffgraindelay/tests/run_tests.sh /tmp/veffgraindelay-renders
 
   It checks the plain delay, the tempo sync, mix 0, silence, the tails at the most feedback, the grain edges and
   determinism, and writes WAV files of test sounds through several settings and the page as PNG into that folder.
+
+
+`veffgranular` builds the same way inside an open-field 0.14 checkout (`open-field-catalog`), at `veff/veffgranular/`; `gen_tables.py` writes `veffgranular_tables.h`.
