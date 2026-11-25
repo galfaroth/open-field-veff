@@ -1,0 +1,45 @@
+{
+  "about": "veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3. A sequencer for the drum that plays nothing itself and lets every key through; its page shows the sample's wave, the cuts as the knobs move them and which slice each key plays. Modes: transient (sensitivity), lazy (zero crossings, short slices merged), equal (N parts); mapping in order or onto the stock kit's layout, with or without wrap. A press of the fourth knob writes the 24 start/end points of the current slot; shift and that press puts the kit's own back. It changes no place of the firmware and needs the base.",
+  "name": "veffchop",
+  "version": 1,
+  "interface": 1,
+  "build": "veff_veffchop",
+  "sources": [
+    "veff/veffchop/veffchop.cpp",
+    "veff/veffchop/veffchop_card.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [],
+  "card": {
+    "level": 5,
+    "frame": "veffchop_frame",
+    "pick": null,
+    "pictures": false,
+    "input": "veffchop_input",
+    "folders": [
+      {
+        "shown": false
+      }
+    ],
+    "asks": [
+      {
+        "kind": "sequencer",
+        "name": "veffchop",
+        "synth_only": false,
+        "all_midi": false,
+        "shown": "veffchop_shown",
+        "tick": null,
+        "key": "veffchop_key",
+        "run": null,
+        "octave": null,
+        "playing": null
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}

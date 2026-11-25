@@ -197,6 +197,31 @@ Version 2's shape, reverse and the two random values add nothing a frame that co
 
 `sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones. Version 2 adds: single grains over a constant sample at every shape, size and direction (no step steeper than a 16-frame edge allows, the top where the shape puts it), overlapping grains keeping the even bell's level, 148 reversed runs with a region that is not at 0 (no read outside it), a reversed grain shown to read a ramp downward, and the sampler's region from the fields the probe printed.
 
+## Sequencer for the drum: veffchop
+
+**Nothing of veffchop has been tried on a unit.** It is built and tested on a computer only. It writes to the drum kit's memory (the 24 start and end points of the current slot), at addresses found with `veffdrumprobe` on OS 1.7.3 (`veffdrumprobe/FINDINGS.md`, sections 6 and 7). It is for OS 1.7.3 only.
+
+[`veffchop.pack`](veffchop.pack) chops the current drum kit's sample into the 24 drum keys. It is at the end of the unit's list of sequencers: choose it for the **drum** and switch it on. It plays nothing itself; every key goes through to the kit, and the page shows which slice the key plays.
+
+The page: the whole sample's wave, a white line at every cut with the slice's number over it, the lines moving as soon as a knob turns. Under the wave a strip of the 24 keys, each with its slice's number and colour (`-` dark: the key keeps the kit's own points). A key struck lights its cell and its slice, and a pink marker runs across the slice at 44.1 frames a millisecond (the key's pitch not counted). The tag after the title says how many slices, `ANALYSING n%`, or why nothing can be chopped.
+
+| Knob | Turn | Press | With shift: turn | With shift: press |
+| --- | --- | --- | --- | --- |
+| 1 (blue) | MODE: TRANSIENT, LAZY, EQUAL | | OFFSET 0..20 ms (cuts moved earlier) | |
+| 2 | SENS 0..100 (transient, lazy) or PARTS 2..24 (equal) | | GAP 20..500 ms (lazy: closer cuts merged) | |
+| 3 | MAP: ORDER, WRAP, KIT, KIT+WRAP | | | |
+| 4 | | APPLY: writes the 24 points | | UNDO: the kit's own points back |
+
+- **TRANSIENT**: the onsets at least as strong as SENSITIVITY asks (the strongest 23 when more pass), cut about 1.5 ms before the first loud frame. **LAZY**: the same onsets, a cut within GAP of the one before dropped, each cut moved to the nearest zero crossing. **EQUAL**: N equal parts.
+- **ORDER**: slice 1 on key 1 and on. **KIT**: onto the stock layout: the two strongest low slices on keys 1-2 (kick), the two brightest on 9 and 11 (hats), the strongest of the middle ones on 3-4 (snare), the rest in order. **WRAP** fills keys past the last slice from slice 1 again; without it those keys keep the kit's own points.
+- The sample is read once, when it changed and then stayed put for half a second: 4096 words a frame at most (about 4 s for the longest), on the display thread. The knobs only filter what that reading found.
+- APPLY writes only +4 (start) and +8 (end) of the current slot's 24 key records, in one frame, start first only where that keeps every start before its end; at least `0x00100000` between them. The kit's own 48 words are kept at the first apply to a sample; shift and the fourth knob's press writes them back. Pitch, mode, pan and volume are never touched.
+- Refused: a slot past 8, an address out of range, a stereo byte other than 0/1, a sample under 0.1 s, a sample still loading, and **mono samples** (v1).
+- Lines in the log: `veffchop: start` (the first line of its first frame, which does nothing else), `slot n: ... analysing`, `slot n analysed in ... frames: ... candidates`, `applied to slot n: ...` with four lines `keys a-b start-end ...`, `undo on slot n`, `not chopping: ...`.
+- Whether a stock save of the kit keeps the new points is not known (FINDINGS section 7).
+
+Tests on a computer, under the address and undefined-behaviour sanitizers (`OPEN_FIELD=<open-field 0.12> sh veffchop/tests/run_tests.sh <folder>`): the Q31 conversion exact for every frame, onsets on synthetic drum loops with known hits, lazy cuts on zero crossings, equal parts, the mappings, the order of the writes, undo, the refusals, the budget of words a frame; and the page as pictures. `veffchop/tests/build_pack.sh` builds the pack and refuses one that needs a name other than open-field's.
+
 ## Thumbnails
 
 `thumbs/<name>.png`: each pack's shape alone, 300×240 with transparency, for the catalog.
