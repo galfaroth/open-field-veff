@@ -124,7 +124,7 @@ times feedback.
 
 ## Engine: veffgranular
 
-> **This branch (`veffgranular-drop`) holds version 5, an experiment for one unit and not for the listing.** While the engine's page is up, the drop key calls the firmware's own import of the tape clipboard for the slot's sample (OS 1.7.3+0 only, behind a sum of the firmware's bytes), so a lifted cut can be dropped without going through `sampler`. The call is made on a thread the firmware does not make it on; it has never run on a unit and may hang it. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number. Shift and drop is left to the unit. The drop key is taken to be key 11; a file `dropkey.txt` in the folder `veffgranular` with another number corrects that. Everything about it, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
+> **This branch (`veffgranular-drop`) holds version 6, an experiment for one unit and not for the listing.** While the engine's page is up, the drop key calls the firmware's own import of the tape clipboard for the slot's sample (OS 1.7.3+0 only, behind a sum of the firmware's bytes), so a lifted cut can be dropped without going through `sampler`. The call is made on a thread the firmware does not make it on; it has never run on a unit and may hang it. The page says `DROPPING`, then `DROPPED`, or `NOTHING LIFTED`, or `DROP REFUSED` and a number. Shift and drop is left to the unit. The drop key is taken to be key 11; a file `dropkey.txt` in the folder `veffgranular` with another number corrects that. Everything about it, the risks and the log's lines: [`veffgranular/DROP.md`](veffgranular/DROP.md).
 
 <img src="pictures/veffgranular.png" alt="veffgranular" width="480">
 
@@ -229,4 +229,4 @@ sh veff/veffgraindelay/tests/run_tests.sh /tmp/veffgraindelay-renders
   determinism, and writes WAV files of test sounds through several settings and the page as PNG into that folder.
 
 
-`veffgranular` builds the same way inside an open-field 0.14 checkout (`open-field-catalog`), at `veff/veffgranular/`; `gen_tables.py` writes `veffgranular_tables.h`.
+`veffgranular` builds with `OPEN_FIELD=<an open-field 0.14 checkout> sh veffgranular/tests/build_pack.sh` (`gen_tables.py` writes `veffgranular_tables.h`). The script refuses a pack that needs any name but open-field's own (`op1f_...`): the unit has no C library, and a struct copied as a whole or a division can make the compiler call `memcpy`, `memset` or a libgcc routine, for which the loader leaves the pack out at the start ("nobody offers the name it needs"). `tools/pack_build.py check` prints such a name in its line `wants:` and does not fail. Version 5 was lost to this on a unit; version 6 needs `op1f_level_10`, `op1f_list`, `op1f_log`, `op1f_memory`, `op1f_page_stand_in`, `op1f_paint_box`, `op1f_paint_line`, `op1f_param_get`, `op1f_param_heard`, `op1f_param_set`, `op1f_read`, `op1f_riding`, `op1f_value_get`, `op1f_value_set` and nothing else.

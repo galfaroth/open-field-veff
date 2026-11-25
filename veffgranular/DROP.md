@@ -245,3 +245,13 @@ sum <s> clip <frames> t<tracks> o<other> q<read>/<write>` before; `drop< <answer
 changed <0/1> ours <frames> q../..; <d> done <r> refused` after; `drop+40 synth <n> w.. sum .. same <0/1> q../..`
 forty frames on. **It worked** when `changed 1` and `ours` is the clipboard's length, and the line
 `veffgranular: synth <n>: sampler frames 0..<length>, ..., ours <length>` stands between the two.
+
+# Version 5 was left out by the loader; version 6
+
+Version 5 never ran on the unit: `loader: ... 'veffgranular' is left out: nobody offers the name it needs, _memcpy`.
+Building everything but the render for size made the compiler call `memcpy` (four times) and `memset` (once) for the
+32-byte record of a slot, where it had copied word by word before. The unit has no such function.
+
+Version 6 copies and clears that record word by word (`seen_copy`, `seen_clear`), and the build
+(`veffgranular/tests/build_pack.sh`) now refuses a pack that needs any name but open-field's. Nothing else differs
+from version 5; its start line reads `veffgranular: v6 start`. Versions 3 and 4 needed only open-field's names.

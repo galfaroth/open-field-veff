@@ -244,6 +244,13 @@ static inline u32 rd8(u32 a) { return *(const volatile u8*)a; }
 static inline int in_ddr(u32 a, u32 bytes) { return a >= DDR_LO && a < DDR_HI && bytes <= DDR_HI - a; }
 
 struct SamplerSeen { u32 data, frames, words, stereo, sum, first, end, bad; };
+// Never assigned or initialised as a whole: the compiler would call memcpy or memset for it, and the unit has none
+// (a pack that needs such a name is left out at the start). Word by word, through these two.
+static void seen_copy(SamplerSeen& to, const SamplerSeen& from) {
+    to.data = from.data; to.frames = from.frames; to.words = from.words; to.stereo = from.stereo;
+    to.sum = from.sum; to.first = from.first; to.end = from.end; to.bad = from.bad;
+}
+static void seen_clear(SamplerSeen& s) { s.data = s.frames = s.words = s.stereo = s.sum = s.first = s.end = s.bad = 0; }
 static SamplerSeen sampler_seen[SLOTS];
 
 // A cheap sum of a pool: 8 runs of 8 words spread over `bytes` of it, and 12 single words at 64, 128 .. 131,072
@@ -276,12 +283,13 @@ static void sampler_found(u32 slot, SamplerSeen& s, u32 first, u32 end) {   // w
         source_publish(&sampler_src[slot], (const short*)s.data, end, s.stereo, first, end, 60, 65536);
         op1f_log(3, LOG_FILE, 6, "veffgranular: synth %u: sampler frames %u..%u, f%u w%u st%u, ours %u", slot + 1, first, end, s.frames, s.words, s.stereo, own_frames[slot]);
     }
-    was = s;
+    seen_copy(was, s);
 }
 
 // The cheap look at a slot: its fields and the sum, 64 words. Asks for a search when they changed.
 static void sampler_refresh(u32 slot) {
-    SamplerSeen s = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    SamplerSeen s;
+    seen_clear(s);
     const u32 holder = rd32(SLOT_TABLE + slot * 4u);
     if ((holder & 3u) || !in_ddr(holder, 8)) s.bad = 1;
     u32 object = 0;
@@ -300,7 +308,7 @@ static void sampler_refresh(u32 slot) {
         if (was.bad != s.bad) op1f_log(2, LOG_FILE, 5, "veffgranular: synth %u: sampler source not valid (check %u)", slot + 1, s.bad);
         sampler_src[slot].valid = 0;
         scan_pending &= ~bit; if (scan_slot == slot) scan_slot = SLOTS;
-        was = s;
+        seen_copy(was, s);
         return;
     }
     s.sum = pool_sum(s.data, sampler_capacity(s.frames, s.stereo) << (s.stereo ? 2 : 1));
@@ -325,7 +333,7 @@ static void sampler_refresh(u32 slot) {
         return;
     }
     sampler_src[slot].valid = 0;                      // nothing of it is played or shown until the search is over
-    scan_want[slot] = s;
+    seen_copy(scan_want[slot], s);
     scan_pending |= bit;
     if (scan_slot == slot) scan_slot = SLOTS;         // a search under way was for what the pool held before
 }
@@ -343,9 +351,10 @@ static void sampler_scan_frame() {
     if (scan.state != (unsigned)sscan::DONE) return;
     const u32 slot = scan_slot;
     scan_slot = SLOTS; scan_pending &= ~(1u << slot);
-    SamplerSeen s = scan_want[slot];
+    SamplerSeen s;
+    seen_copy(s, scan_want[slot]);
     sampler_found(slot, s, 0, scan.e);
-    if (!scans_done++) op1f_log(3, LOG_FILE, 18, "veffgranular: v5 first scan done: synth %u, end %u, %u frame(s)", slot + 1, scan.e, scan_frames);
+    if (!scans_done++) op1f_log(3, LOG_FILE, 18, "veffgranular: v6 first scan done: synth %u, end %u, %u frame(s)", slot + 1, scan.e, scan_frames);
 }
 
 // the slot's sample object when its table word, holder, object and pool are where the sampler source expects them; 0
@@ -701,7 +710,7 @@ static struct { u32 stood, refusal_said, started, disk_was, round; u32 keys_said
 extern "C" void veffgranular_frame(const Op1fFrame* now) OP1F_NAMED("veffgranular_frame");
 extern "C" void veffgranular_frame(const Op1fFrame* now) {
     if (now->bytes < (u32)FRAME_LEVEL_4) return;
-    if (!fr.hello) { fr.hello = 1; op1f_log(3, LOG_FILE, 19, "veffgranular: v5 start"); }   // before anything else
+    if (!fr.hello) { fr.hello = 1; op1f_log(3, LOG_FILE, 19, "veffgranular: v6 start"); }   // before anything else
     words_this_frame = 0;
     if (!fr.stood) {
         if (op1f_page_stand_in(CARD, ASK_ENGINE, 0)) fr.stood = 1;
