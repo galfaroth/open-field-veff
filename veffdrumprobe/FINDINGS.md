@@ -60,3 +60,48 @@ probe in this folder exists to confirm or refute it. Every address belongs to 1.
 
 ## Still unknown
 - The 24-key store and the JSON→Q31 converter. Which voice stride (0x38 or 0x48) is the drum's.
+
+## 5. After probe v1 on the unit, and a second reading (supersedes section 3)
+
+**What v1 showed.** Slot 1: holder `0x8c0fe110`, object `0x8c195c98`, data at the pool `0x8d518598`, frames 882000,
+stereo 1. Words were 1719912 for the first kit and 1026000 for the second. Kind is **0**, not 3: the constructor's
+second argument is not stored as the kind byte, or something writes the byte later. The edit block at `0x11904754`
+changed twice and once held eight equal words `1f400000`. The voices at the 0x38 spacing have the drum voice
+class word `0x848cb728`.
+
+**The 24 keys live in a table (confidence high).**
+- The table is at `0x84a03cc8 + slot·0x300 + key·0x20`: 24 records of 8 words for each slot.
+- The slot is the current drum slot, `[0x84a01528]`.
+- The audio loop (`0x11a03728`..`0x11a039a6`) runs once for each of the 8 drum voices. For each voice it copies the
+  record of that voice's key into the scratch block `0x11904754`, then calls the voice's render (vtable +8) with that
+  block.
+- The record's index comes from `0x11903560 + 4·voice`. The UI-side helpers (`0x8d5056a0`, `0x8d505720`,
+  `0x8d5057c0`) compute the same record address and pass it to the voice's vtable +0xc / +0x14 / +0x18.
+- So `0x11904754` is only a scratch copy, shared with another path (the 8 equal words). Nothing is stored there.
+- The function at `0x8d4f4840`..`0x8d4f4c00` walks the same table for one slot (×0x300, 24 keys, 0x20 apart). It reads
+  the words and builds JSON values under the kit's key names: the table-to-JSON direction (save). The functions near
+  `0x8d4f5236`..`0x8d4f55de` also name the table. The JSON-to-table direction is most likely there; not read
+  (medium).
+
+**Inside a key record** (as in section 2; medium until v2): +0 pitch, +4 start, +8 end (Q31 of capacity), +0xc
+top 3 bits a mode, +0x10 mode or direction bits, +0x14 volume, +0x18 and +0x1c not known.
+
+**The per-voice words are not start and end (high).** voice+8..+0x14 are the four gain words that `0x8f0137ec`
+writes, a pan law: `7ffffffe 0 7ffffffe 0` and `41d0cda0 6dc86b62 …` are two pan positions. voice+0x18 is the play
+position, which moves. The key's start and end are not copied into the voice; the render reads them from the scratch
+block every block.
+
+**The L1 bytes at `0x11904700`** (0 2 0 0 0 c c 7 d 7 7 7 …) were not traced. They are not start or end. They could
+be per-key small settings, such as groups.
+
+**Can a chop pack set 24 slices?** Probably: write +4 and +8 of the 24 records at
+`0x84a03cc8 + [0x84a01528]·0x300`, on the UI thread (confidence medium-high).
+- No refresh call should be needed: the audio loop copies a record into the scratch block on every block, so a write
+  takes effect at the next block.
+- Write start and end with two aligned word stores. The worst case is one block with the new start and the old end.
+- Saving the kit should carry the change, because the save builds the JSON from this table (section 5's walker).
+  Medium: the path from "save" to that function was not traced.
+- The JSON tree plus reload `0x8d4ebc68` also reloads the sample, so it is the heavier route.
+
+v2 of the probe logs each changed key record of the current slot (`key S.K` plus 8 words) and the record index of
+each voice (`voice keys`).

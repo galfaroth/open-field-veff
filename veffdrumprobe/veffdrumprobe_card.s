@@ -16,7 +16,7 @@ op1f_card_veffdrumprobe_level:
 .global op1f_card_veffdrumprobe
 .type op1f_card_veffdrumprobe, STT_OBJECT
 op1f_card_veffdrumprobe:
-    .long 0x44524143, 44, 1, 1
+    .long 0x44524143, 44, 1, 2
     .ascii "veffdrumprobe"
     .fill 3, 1, 0
     .long veffdrumprobe_frame

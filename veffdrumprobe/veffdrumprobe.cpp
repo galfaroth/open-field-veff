@@ -6,6 +6,8 @@
 //   EDIT         0x11904754: the six-word parameter block the drum knob edit writes (+0 pitch, +4 start, +8 end,
 //                +0xc ?, +0x10 mode bits, +0x14 volume/flags); logged as raw words
 //   L1 WINDOW    0x11904700..0x11904800: the words around it (per-slot tables at 0x11904714 and 0x11904734)
+//   KEY_TABLE    0x84a03cc8 + slot*0x300 + key*0x20 (v2): the kit's 24 key records, 8 words each
+//   VOICE_KEYS   0x11903560 + 4*voice (v2): the key record each drum voice plays
 //   DRUM VOICES  0x119062d8 + 0x38 i (i < 8): the first 14 words of each
 // It never writes outside its own variables, runs only from the frame function every 16th frame, checks every
 // address before reading, and logs a part only when it changed, at most once every 64 frames per part.
@@ -21,11 +23,13 @@ enum {
     SLOTS = 8, CHECK_EVERY = 16, LOG_GAP = 64,
     OFF_FRAMES = 0xd768, OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OFF_KIND = 0xd771, OBJECT_BYTES = 0xd774,
     WIN_WORDS = 64, VOICES = 8, VOICE_WORDS = 14,
-    PARTS = SLOTS + 1 + 1 + VOICES,                       // slots, edit block, window, voices
+    KEYS = 24, KEY_WORDS = 8, KEY_BYTES = 0x20, KIT_BYTES = 0x300,
+    PARTS = SLOTS + 1 + 1 + VOICES + 1 + KEYS,            // slots, edit block, window, voices, voice keys, keys
 };
 static const u32 HOLDERS = 0x0802f0acu, CUR_SLOT = 0x84a01528u;
 static const u32 EDIT = 0x11904754u, WIN = 0x11904700u;
 static const u32 VOICE_BASE = 0x119062d8u, VOICE_STRIDE = 0x38u;
+static const u32 KEY_TABLE = 0x84a03cc8u, VOICE_KEYS = 0x11903560u;   // v2
 static const u32 POOL = 0x8d518598u, POOL_STRIDE = 0x35d540u;
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u;
 static const u32 SDRAM_LO = 0x08000000u, SDRAM_HI = 0x08100000u;
@@ -81,6 +85,29 @@ static void check_edit(u32 ms) {
              cur + 1, w[0], w[1], w[2], w[3], w[4], w[5], w[1], w[2], ms);
 }
 
+// v2: the kit's 24 key records of the current drum slot, 8 words each, one line per key that changed.
+static void check_keys(u32 ms) {
+    u32 cur = in(CUR_SLOT, 4, DDR_LO, DDR_HI) ? rd32(CUR_SLOT) : 0xffffffffu;
+    if (cur >= SLOTS) return;
+    u32 base = KEY_TABLE + cur * KIT_BYTES;
+    if (!in(base, KIT_BYTES, DDR_LO, DDR_HI)) return;
+    for (u32 k = 0; k < KEYS; ++k) {
+        u32 a = base + k * KEY_BYTES, v[KEY_WORDS], sig = mix(0x811c9dc5u, cur);
+        for (u32 i = 0; i < KEY_WORDS; ++i) { v[i] = rd32(a + i * 4); sig = mix(sig, v[i]); }
+        if (!changed(SLOTS + 2 + VOICES + 1 + k, sig)) continue;
+        op1f_log(3, LOG_FILE, 7, "drumprobe: key %u.%u %08x %08x %08x %08x %08x %08x %08x %08x at %u ms",
+                 cur + 1, k + 1, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], ms);
+    }
+}
+
+// v2: which key record each drum voice was last given.
+static void check_voice_keys(u32 ms) {
+    u32 v[VOICES], sig = 0x811c9dc5u;
+    for (u32 i = 0; i < VOICES; ++i) { v[i] = in(VOICE_KEYS + i * 4, 4, L1_LO, L1_HI) ? rd32(VOICE_KEYS + i * 4) : 0xff; sig = mix(sig, v[i]); }
+    if (!changed(SLOTS + 2 + VOICES, sig)) return;
+    op1f_log(3, LOG_FILE, 8, "drumprobe: voice keys %u %u %u %u %u %u %u %u at %u ms", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], ms);
+}
+
 // The L1 window, 64 words, in four lines of 16 when anything in it changed.
 static void check_window(u32 ms) {
     u32 sig = 0x811c9dc5u;
@@ -109,9 +136,11 @@ extern "C" void veffdrumprobe_frame(const Op1fFrame* now) {
     ++probe.frames;
     if (probe.frames & (CHECK_EVERY - 1)) return;
     if (probe.frames == CHECK_EVERY)
-        op1f_log(3, LOG_FILE, 6, "drumprobe: version 1, read-only; holders %08x edit %08x voices %08x", HOLDERS, EDIT, VOICE_BASE);
+        op1f_log(3, LOG_FILE, 6, "drumprobe: version 2, read-only; holders %08x keys %08x voices %08x", HOLDERS, KEY_TABLE, VOICE_BASE);
     for (u32 s = 0; s < SLOTS; ++s) check_slot(s, now->ms);
     check_edit(now->ms);
     check_window(now->ms);
     for (u32 i = 0; i < VOICES; ++i) check_voice(i, now->ms);
+    check_voice_keys(now->ms);
+    check_keys(now->ms);
 }

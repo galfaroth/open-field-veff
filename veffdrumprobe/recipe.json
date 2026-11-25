@@ -1,7 +1,7 @@
 {
   "about": "veffdrumprobe: a read-only probe for OS 1.7.3. Every 16th frame it reads the drum sampler holders, sample objects, the drum edit block in L1 and the current drum slot, checks every address before reading, and logs what changed. It writes nothing but its own variables, changes no place of the firmware, runs only on the display thread, and needs the base.",
   "name": "veffdrumprobe",
-  "version": 1,
+  "version": 2,
   "interface": 1,
   "build": "veff_veffdrumprobe",
   "sources": [
