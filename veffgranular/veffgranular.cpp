@@ -358,6 +358,10 @@ static void kept_write(u32 slot) {                    // {"m":0,"l":0,"f":1,"d":
 // ---------------------------------------------------------------- the keys (input thread)
 static volatile u32 pending_click;                    // bits 0..3 presses, 4..7 presses with shift
 static volatile int pending_turn[4];                  // page B's turns, in notches
+// The keys that go down while the page is up and that the pack does not take, noted here and said once each in the
+// log by the frame function. Nothing is done with them: the line tells which number the unit's keys have (the drop
+// key's among them; DROP.md).
+static volatile u32 other_keys[4];                    // a bit a key number, 0..127
 extern "C" int veffgranular_input(const Op1fInput* e) OP1F_NAMED("veffgranular_input");
 extern "C" int veffgranular_input(const Op1fInput* e) {
     if (e->bytes < (u32)INPUT_LEVEL_2 || !e->mine) return 0;
@@ -372,6 +376,8 @@ extern "C" int veffgranular_input(const Op1fInput* e) {
         return 1;
     }
     if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && e->key >= (u32)PRESS_FIRST && e->key <= (u32)PRESS_LAST) return 1;
+    if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && e->key < 128u && (e->key < 13u || e->key > 53u))
+        other_keys[e->key >> 5] |= 1u << (e->key & 31u);   // one word written; not taken
     return 0;
 }
 
@@ -501,7 +507,7 @@ static void paint(void* c, u32 where, u32 how, int shift) {
 }
 
 // ---------------------------------------------------------------- the frame (display thread)
-static struct { u32 stood, refusal_said, started, disk_was, round; } fr;
+static struct { u32 stood, refusal_said, started, disk_was, round; u32 keys_said[4]; } fr;
 
 extern "C" void veffgranular_frame(const Op1fFrame* now) OP1F_NAMED("veffgranular_frame");
 extern "C" void veffgranular_frame(const Op1fFrame* now) {
@@ -564,5 +570,12 @@ extern "C" void veffgranular_frame(const Op1fFrame* now) {
         }
     } else { pending_click = 0; for (int k = 0; k < 4; ++k) pending_turn[k] = 0; }
     for (u32 p = 0; p < (u32)SLOTS; ++p) if (unsaved >> p & 1u) kept_write(p);
+    for (u32 w = 0; w < 4u; ++w) {                    // a key the page saw and did not take: one line, once a key a start
+        const u32 fresh = other_keys[w] & ~fr.keys_said[w];
+        if (!fresh) continue;
+        u32 bit = 0; while (!(fresh >> bit & 1u)) ++bit;
+        fr.keys_said[w] |= 1u << bit;
+        op1f_log(3, LOG_FILE, 10, "veffgranular: key %u went down while the page was up (not taken)", w * 32u + bit);
+    }
     if (now->page == CARD && now->canvas != 0 && (how & (u32)OP1F_SHOWN_UP)) paint(now->canvas, where, how, now->shift != 0);
 }

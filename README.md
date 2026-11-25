@@ -165,6 +165,9 @@ A granular sample synth, in the unit's own list of **engines** (shift and T1 on 
 
 What is not known or not yet possible:
 
+- **A drop straight onto the engine's page is not there.** The sampler's own drop was read in the firmware: it only takes a drop for a sound whose engine is `sampler`, and it runs on a thread of the firmware's own that a pack cannot run on. What was found, why no guess was shipped and what would unblock it is in [`veffgranular/DROP.md`](veffgranular/DROP.md). For now: shift and T1, `sampler`, drop, shift and T1, `veffgranular`.
+- Version 2 writes one line in the log for each key that goes down while its page is up and that it does not take, with the key's number: that is how the drop key's number will be learnt.
+
 - The probe showed, on one unit, that a slot's sample stays in memory while another engine plays on that slot and comes back the same after the unit restarts.
 - The sampler's own start, end and loop points and root note are not found yet: the engine uses all of what was dropped or recorded and C4 as the root. Use position and tune.
 - The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
