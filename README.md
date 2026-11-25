@@ -18,6 +18,8 @@ Cycles are per block (64 frames, stereo), measured on a unit. The effect limit i
 | veffurator | A saturator, 2x oversampled. Knobs: drive, type (analog, sine, medium, hard, fold, digital), output, mix. With shift held: color, freq, clip, dc. | `punch` | ~54,000 average | [`veffurator.pack`](veffurator.pack) |
 | veffrrrr | A two-stage distortion in serial routing. Knobs: drive, s1, s2, mix. With shift held: four sub-pages (s1, s2, fb, out); shift and a press of the 1st knob steps between them. Mix starts at 15%. | `nitro` | ~61,000-65,000 average; 82,000-86,000 at heavy settings (a cheaper version is in progress) | [`veffrrrr.pack`](veffrrrr.pack) |
 
+One engine too: **veffgranular**, a granular sample synth in the unit's list of engines ([below](#engine-veffgranular)); untested on a unit. File: [`veffgranular.pack`](veffgranular.pack).
+
 ## Controls
 
 Every effect uses the four knobs: blue, ochre, grey and red, in that order. Holding shift turns the knobs to a second set of values, which the sound keeps when you save it. The page always shows the set you are turning; on the shift set, a pink tag next to the title says so.
@@ -82,6 +84,55 @@ With shift held there are **four pages**. **Shift and a press of the 1st knob st
 - A press of a knob without shift puts its value back to the start.
 - The feedback only sings while sound comes in. A gate closes it about 0.4 s after the input goes quiet, so it never runs away.
 
+## Engine: veffgranular
+
+A granular sample synth, in the unit's own list of **engines** (shift and T1 on a synth sound), in the spirit of Granulator III. Each key plays grains of one sample, pitched from the note against the sample's root (C4 unless the file says otherwise). Stereo out, six voices, up to four grains a voice (three with a stereo sample). Built for open-field 0.14 (base level 10). **Not yet tried on a unit**: everything below was built and tested on a computer only.
+
+**The intended way to work** is the sampler's: lift a cut from the tape and drop it in the sampler, record into it, or load a file, then switch the sound to `veffgranular` and play that same sample as grains. That needs the engine to read the sample the synth sampler holds for the sound's slot. A way to do it was found by reading the firmware on a computer, and is built in, but it is **off** until a run of the probe pack (`veffsampleprobe`) on a unit confirms it (below). Until then the engine plays a file from its own folder.
+
+| Mode (press the 1st knob) | What the grains do |
+| --- | --- |
+| classic | start at the position (moved by scan), each pushed by a random spray |
+| loop | follow a play head that loops a short region from the position: free (four grains long) or 1/16, 1/8, 1/4, 1/2, 1 or 2 bars of the tempo (press the 3rd knob) |
+| cloud | as classic, but each grain's spacing, size, pitch and pan are random, and the spray is never under a sixteenth of the sample |
+
+| | Blue | Ochre | Grey | Red |
+| --- | --- | --- | --- | --- |
+| Knobs | position (0..100% of the sample) | size (5 ms..1 s) | density (0.5..5 grains at once) | spray (0..2 s around the position) |
+| Shift held | scan (-2x..+2x: the position travels through the sample, backwards below 0) | spread (pan and a little detune between grains) | tune (-24..+24 semitones) | volume |
+
+- Presses without shift: 1st the mode, 2nd the window (soft, flat, pluck, tri), 3rd the loop's length, 4th the next file (1..8).
+- With shift, a press puts its value back: scan 0, spread 30, tune 0, volume 80.
+- The eight knob values are kept by the unit with the sound. Mode, window, loop length and file number are kept with the sound too (level 7, `veffgranular_set`).
+- The page draws the sample's overview, the position and the spray's reach, and every grain that sounds, as a pink stroke as tall as its window is open, moving as it plays. The tag beside the title is the mode, or `SHIFT` while shift is held. Top right: the source, the window and (loop) the loop's length.
+
+### The sample, today: a file in the pack's folder
+
+1. Connect the unit in disk mode. Next to `synth`, `drum` and `tapes` there is a folder `veffgranular`.
+2. Put a sample in it, named with its number first: `1.wav`, `2 pad.aif`, and so on, up to `8`. WAV or AIFF/AIFC (`NONE` or `sowt`), 16, 24 or 32-bit PCM, mono or stereo, 8 to 192 kHz. At most 4 MiB (about 47 s mono or 23 s stereo at 16-bit, 44.1 kHz). A `smpl` (WAV) or `INST` (AIFF) chunk sets the root note.
+3. Leave disk mode. Each sound plays file 1 until you press the 4th knob to pick another. The file is read when a sound that plays the engine needs it, and again each time disk mode closes.
+
+With no file, a file that isn't one of these, or no memory for it, the engine is silent and the page says why. Only one file is in memory at a time.
+
+### The sample, later: the synth sampler's own (off for now)
+
+The source that reads the synth sampler's sample of the sound's slot is in the pack, OS 1.7.3+0 only, and **off**. To switch it on, once the probe has confirmed the findings on your unit, put an empty file named `sampler.on` in the `veffgranular` folder; take it out to switch it off. While it is on and its checks pass, the engine plays the sampler's sample; when they fail (another firmware, an address that does not look right), the file source plays as before. The flow is then: switch the sound to `sampler` to drop, record or trim, then back to `veffgranular` to play it.
+
+What is not known or not yet possible:
+
+- Whether the sample survives switching the sound's engine from `sampler` to `veffgranular` and back. The firmware reading says it should; the probe decides.
+- The sampler's own start, end and loop points and root note are not found yet: the engine uses the whole recording (up to where its zeroed tail begins) and C4 as the root. Use position and tune.
+- The saved sound does not carry the sample: it is a `dsynth` sound with the engine's values. After a power cycle the slot holds whatever the sampler last loaded.
+- The sampler rewrites its buffer in place while it records or takes a drop. The engine notices the change and fades its grains out and starts again, so expect a hole in the sound while that happens, not a fault.
+
+### Cost
+
+The unit's limit for an engine is 40,000 cycles a voice's render; veffgranular declares 40,000. **Not measured on a unit.** The estimate from the compiled inner loop: about 60 instructions a grain-frame with a stereo sample (45 mono), plus the reads of the sample in the unit's main memory, so about 30,000-36,000 cycles a render at the grain cap (3 stereo or 4 mono grains through the whole block). The worst case is cloud or high density at a high note with a stereo sample: the grains read far apart and each read can miss the cache. If the log's `engine: 'veffgranular' this period:` line shows renders over the declared cost, lower `ACTIVE_MOST_STEREO` / `ACTIVE_MOST_MONO` in `granular_core.h`.
+
+### Tested on a computer
+
+`sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones.
+
 ## Pages
 
 Rendered on a computer from each pack's own drawing code, at typical settings, scaled 2x.
@@ -127,3 +178,5 @@ What else is in the folders:
 - `veff_ui.h` is the shared page: layout, stroke font and icons. It is the same in every folder, so each pack builds on its own.
 - `<name>.svg.make` is a plain black page. It stands in for the base's effect page, so the pack paints the whole screen.
 - The table generators (`make_tables.py`, `gen_tables.py`) write the `*_tables.h` files.
+
+`veffgranular` builds the same way inside an open-field 0.14 checkout (`open-field-catalog`), at `veff/veffgranular/`; `gen_tables.py` writes `veffgranular_tables.h`.

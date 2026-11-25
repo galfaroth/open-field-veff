@@ -1,0 +1,112 @@
+{
+  "about": "veffgranular: a granular sample synth engine in the unit's engine list (shift and T1 on a synth sound). Grains of one sample, pitched from the note: classic, loop and cloud modes. Knobs: position, size, density, spray; with shift: scan, spread, tune, volume. Presses: mode, window, loop length, file; with shift a press resets its value. The sample: a WAV or AIFF named 1..8 in the folder veffgranular (4 MiB of working memory), or, switched on by a file sampler.on there, the synth sampler's own sample of the sound's slot (OS 1.7.3+0, not confirmed on a unit). Veff page. Changes no place of the firmware; needs the base.",
+  "name": "veffgranular",
+  "version": 1,
+  "interface": 1,
+  "build": "veff_veffgranular",
+  "sources": [
+    "veff/veffgranular/veffgranular.cpp",
+    "veff/veffgranular/veffgranular_card.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [],
+  "card": {
+    "level": 10,
+    "frame": "veffgranular_frame",
+    "pick": null,
+    "pictures": false,
+    "input": "veffgranular_input",
+    "folders": [
+      {}
+    ],
+    "asks": [
+      {
+        "kind": "engine",
+        "name": "veffgranular",
+        "stereo": true,
+        "cycles": 40000,
+        "voice_bytes": 0,
+        "voice_align": 4,
+        "render": "veffgranular_render",
+        "reset": null,
+        "shown": "veffgranular_shown",
+        "params": [
+          {
+            "name": "position",
+            "low": 0,
+            "high": 1000,
+            "start": 250
+          },
+          {
+            "name": "size",
+            "low": 0,
+            "high": 100,
+            "start": 50
+          },
+          {
+            "name": "density",
+            "low": 0,
+            "high": 100,
+            "start": 50
+          },
+          {
+            "name": "spray",
+            "low": 0,
+            "high": 100,
+            "start": 10
+          },
+          {
+            "name": "scan",
+            "low": -100,
+            "high": 100,
+            "start": 0
+          },
+          {
+            "name": "spread",
+            "low": 0,
+            "high": 100,
+            "start": 30
+          },
+          {
+            "name": "tune",
+            "low": -24,
+            "high": 24,
+            "start": 0
+          },
+          {
+            "name": "volume",
+            "low": 0,
+            "high": 100,
+            "start": 80
+          }
+        ],
+        "sounds": []
+      },
+      {
+        "kind": "memory",
+        "name": "veffgranular",
+        "bytes": 4194304,
+        "align": 32
+      },
+      {
+        "kind": "keeps",
+        "name": "veffgranular",
+        "changed": "veffgranular_changed",
+        "keys": [
+          {
+            "name": "veffgranular_set",
+            "files": [
+              "synth"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}
