@@ -28,6 +28,7 @@ enum {
     MAX_CAND = 1024,
     MAX_SLICES = 24,
     CAPACITY = 882000,         // frames the stereo fractions are fractions of
+    MONO_CAPACITY = 529200,    // v6: and the mono ones (the render's capacity: 0xd7550 with the stereo byte set, 0x81330 without)
     MIN_Q = 0x00100000,        // the stock edit's least length, Q31
     MIN_FRAMES = 882,          // 20 ms: no slice shorter (well over MIN_Q's 431 frames)
     BUDGET = 4096,             // words of the sample read a frame at most
@@ -53,23 +54,26 @@ static inline u32 udiv(u32 n, u32 d) {
     return q;
 }
 
-// floor(f * 2^31 / 882000), the frame's fraction of the capacity, exact: the 64-bit numerator held as two words and
-// divided by a bit loop. Past the capacity it is 0x7fffffff.
-static inline u32 q31_of_frame(u32 f) {
-    if (f >= (u32)CAPACITY) return 0x7fffffffu;
+// floor(f * 2^31 / cap), the frame's fraction of the capacity (882000 stereo, 529200 mono), exact: the 64-bit
+// numerator held as two words and divided by a bit loop. Past the capacity it is 0x7fffffff.
+static inline u32 capacity_of(u32 stereo) { return stereo ? (u32)CAPACITY : (u32)MONO_CAPACITY; }
+static inline u32 q31_of_frame(u32 f, u32 cap = (u32)CAPACITY) {
+    if (f >= cap) return 0x7fffffffu;
     const u32 hi = f >> 1, lo = (f & 1u) << 31;
     u32 q = 0, r = 0;
     for (int i = 63; i >= 0; --i) {
         const u32 bit = i >= 32 ? (hi >> (i - 32)) & 1u : (lo >> i) & 1u;
-        r = (r << 1) | bit;                          // r < 2 * 882000
-        if (r >= (u32)CAPACITY) { r -= CAPACITY; if (i < 32) q |= 1u << i; }   // f < capacity: the quotient < 2^31
+        r = (r << 1) | bit;                          // r < 2 * cap
+        if (r >= cap) { r -= cap; if (i < 32) q |= 1u << i; }   // f < capacity: the quotient < 2^31
     }
     return q;
 }
 
-// floor(q * 882000 / 2^31) to within one frame (for the page and the tests): q * 55125 >> 27 in two halves.
-static inline u32 frame_of_q31(u32 q) {
-    const u32 a = (q >> 16) * 55125u, b = (q & 0xffffu) * 55125u;   // q * 55125 = a * 2^16 + b
+// floor(q * cap / 2^31) to within one frame (for the page and the tests): q * (cap / 16) >> 27 in two halves (both
+// capacities are a multiple of 16: 55125 and 33075).
+static inline u32 frame_of_q31(u32 q, u32 cap = (u32)CAPACITY) {
+    const u32 k = cap >> 4;
+    const u32 a = (q >> 16) * k, b = (q & 0xffffu) * k;              // q * k = a * 2^16 + b
     return (a >> 11) + ((((a & 0x7ffu) << 15) + (b >> 1)) >> 26);
 }
 
@@ -77,6 +81,7 @@ static inline u32 frame_of_q31(u32 q) {
 
 struct Analysis {
     u32 frames, windows, read;          // the sample's frames, its windows, frames read so far
+    u32 stereo;                         // v6: 1 a stereo sample (a word a frame), 0 a mono one (a halfword a frame)
     u32 complete;
     u32 col_scale;                      // (COLS << 20) / frames
     // the window being summed
@@ -95,8 +100,9 @@ struct Analysis {
     u32 fpass, fat;                     // finish_step(): the pass (0 rises, 1 candidates, 2 done) and the window reached
 };
 
-static inline void begin(Analysis& a, u32 frames) {
+static inline void begin(Analysis& a, u32 frames, u32 stereo = 1) {
     a.frames = frames;
+    a.stereo = stereo ? 1u : 0u;
     a.windows = udiv(frames + WIN - 1, WIN);
     if (a.windows > ENV_MAX) a.windows = ENV_MAX;
     a.read = 0; a.complete = 0;
@@ -128,8 +134,14 @@ static inline int step(Analysis& a, Reader rd, u32 data, u32 budget) {
     if (n > budget) n = budget;
     for (u32 k = 0; k < n; ++k) {
         const u32 f = a.read + k;
-        const u32 v = rd(data + f * 4u);
-        const int L = (short)(v & 0xffffu), R = (short)(v >> 16);
+        int L, R;
+        if (a.stereo) {
+            const u32 v = rd(data + f * 4u);
+            L = (short)(v & 0xffffu); R = (short)(v >> 16);
+        } else {                                                    // v6: mono, a halfword a frame: the word holding it read
+            const u32 v = rd(data + (f & ~1u) * 2u);
+            L = R = (short)((f & 1u) ? (v >> 16) : (v & 0xffffu));
+        }
         const u32 mag = (u32)(iabs(L) + iabs(R));
         a.acc += mag;
         if (a.jat == (u32)NONE && mag > a.jthr) a.jat = a.in_win;
@@ -443,11 +455,11 @@ struct Pair { u32 start, end; };
 
 // The Q31 pairs for the keys: a mapped key its slice's, an unmapped one the kit's own (orig). Clamped, end - start
 // at least MIN_Q.
-static inline void targets(const Slices& s, const int* key_slice, const u32* orig, u32* out) {
+static inline void targets(const Slices& s, const int* key_slice, const u32* orig, u32* out, u32 cap = (u32)CAPACITY) {
     for (int k = 0; k < KEYS; ++k) {
         u32 st, en;
         if (key_slice[k] < 0 || (u32)key_slice[k] >= s.n) { st = orig[2 * k]; en = orig[2 * k + 1]; }
-        else { st = q31_of_frame(s.start[key_slice[k]]); en = q31_of_frame(s.end[key_slice[k]]); }
+        else { st = q31_of_frame(s.start[key_slice[k]], cap); en = q31_of_frame(s.end[key_slice[k]], cap); }
         if (st > 0x7fffffffu - (u32)MIN_Q) st = 0x7fffffffu - (u32)MIN_Q;
         if (en > 0x7fffffffu) en = 0x7fffffffu;
         if (en < st + (u32)MIN_Q) en = st + (u32)MIN_Q;

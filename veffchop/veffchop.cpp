@@ -1,4 +1,5 @@
-// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 4: a drum
+// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 6: mono
+// samples too, and the drop key on the page through the base's op1f_sample_drop (DROP.md). Version 4: a drum
 // engine (base 40, OP1F_ASK_DRUM_ENGINE, docs/drum-engine.md): 'veffchop' stands in the drum's engine list, rides the
 // drum sampler, and once picked on a drum sound its page stands on T1 in the drum's mode; it plays nothing itself and
 // lets every keyboard key through to the kit. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
@@ -28,8 +29,8 @@ typedef unsigned char u8;
 using namespace chop;
 
 static const char LOG_FILE[] = "op1f/veffchop.cpp";
-enum { ASK = 0, SLOTS = 8, MONO_CAPACITY = 529200, STEADY_MS = 500, NOTE_MS = 2500,
-       OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, KEY_BYTES = 0x20, KIT_BYTES = 0x300, DATA_PAD = 16 };
+enum { ASK = 0, SLOTS = 8, STEADY_MS = 500, NOTE_MS = 2500,
+       OFF_FRAMES = 0xd768, OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, KEY_BYTES = 0x20, KIT_BYTES = 0x300, DATA_PAD = 16 };
 static const u32 HOLDERS = 0x0802f0acu, CUR_SLOT = 0x84a01528u, KEY_TABLE = 0x84a03cc8u;
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u, SDRAM_LO = 0x08000000u, SDRAM_HI = 0x08100000u;
 
@@ -52,10 +53,14 @@ static inline int in(u32 a, u32 bytes, u32 lo, u32 hi) { return !(a & 3) && a >=
 static u32 words_read;                                   // sample words read this frame (the budget, for the tests)
 static u32 sample_rd(u32 a) { ++words_read; return rd32(a); }
 
+
 // The current slot's sample, every address checked. Answers 0 when it is usable, or why not.
 enum Why { OK = 0, NO_SLOT, NO_OBJECT, NO_SAMPLE, MONO, BAD_STEREO, TOO_LONG };
 static const char* const WHY_TEXT[] = { "", "NO DRUM SLOT", "NO SAMPLE OBJECT", "NO SAMPLE", "MONO: NOT IN V1", "UNKNOWN KIND", "TOO LONG" };
 struct Where { u32 slot, obj, data, words, stereo, frames, table; };
+// v6: after a drop the firmware's words still say the sample loaded before (the import writes neither the words nor
+// the frames): the base's `dropped` (op1f_sample_get) is the length, until a sound is loaded there.
+static u32 dropped_now[8];
 static int locate(Where& w) {
     w.slot = w.obj = w.data = w.words = w.stereo = w.frames = w.table = 0;
     if (!in(CUR_SLOT, 4, DDR_LO, DDR_HI)) return NO_SLOT;
@@ -67,15 +72,21 @@ static int locate(Where& w) {
     if (!in(h, 4, DDR_LO, DDR_HI)) return NO_OBJECT;
     w.obj = rd32(h);
     if (!in(w.obj, OBJECT_BYTES, DDR_LO, DDR_HI)) return NO_OBJECT;
-    w.data = rd32(w.obj);
     w.words = rd32(w.obj + OFF_WORDS);
-    w.stereo = rd8(w.obj + OFF_STEREO);
+    // v6: the sample's address and channels as the base hands them (it holds the object to the slot's own pool)
+    Op1fSample got;
+    if (op1f_sample_get(&op1f_card_veffchop, (u32)OP1F_PLACE_DRUM + w.slot, &got) != 0 || got.data == 0) return NO_OBJECT;
+    w.data = (u32)(unsigned long)got.data;
+    w.stereo = got.stereo;
+    dropped_now[w.slot] = got.dropped;
     if (w.stereo > 1) return BAD_STEREO;
-    if (w.words < 8u + 2u * 4410u) return NO_SAMPLE;                 // under 0.1 s: nothing to chop
-    if (!w.stereo) return MONO;
-    w.frames = (w.words - 8u) >> 1;
-    if (w.frames > (u32)CAPACITY) return TOO_LONG;
-    if (!in(w.data, DATA_PAD + w.frames * 4u, DDR_LO, DDR_HI)) return NO_SAMPLE;
+    // v6: mono too. The render's capacity is 882000 frames with the stereo byte set and 529200 without (0x8f0137c0),
+    // a mono sample a halfword a frame; the words are the frames (twice them for stereo) and 8.
+    if (w.words < 8u + (w.stereo ? 2u : 1u) * 4410u) return NO_SAMPLE;  // under 0.1 s: nothing to chop
+    w.frames = w.stereo ? (w.words - 8u) >> 1 : w.words - 8u;
+    if (dropped_now[w.slot]) w.frames = dropped_now[w.slot];          // v6: a drop's length, while no sound was loaded since
+    if (w.frames > capacity_of(w.stereo)) return TOO_LONG;
+    if (!in(w.data, DATA_PAD + w.frames * (w.stereo ? 4u : 2u), DDR_LO, DDR_HI)) return NO_SAMPLE;
     return OK;
 }
 
@@ -86,6 +97,14 @@ static volatile int turned[4], turned_shift[4];          // turns, 1024 a step, 
 static volatile u32 pressed[4], pressed_shift[4];        // presses counted
 static volatile u32 shift_held;                          // v3: shift (key 38) down, seen by its own down and up
 static volatile u32 press4_how;                          // v3: (count << 8) | how the last press of the 4th knob saw shift
+static volatile u32 drop_down;                           // v6: the place the drop key went down on, 0 none
+static volatile int drop_answer;                         // v6: op1f_sample_drop's answer at the key's up
+static volatile u32 drop_asked;                          // v6: (count << 8) | the place, written after drop_answer
+enum { DROP_KEY = 11 };
+enum { DM_NONE = 0, DM_DROPPED = 1, DM_REFUSED = 2 };
+static u32 drop_message, drop_message_at;                // the frame's own
+static int drop_reason;
+static u32 drop_ticket;                                  // v6: the ticket waited for, 0 none
 
 // The drum engine's page is up: shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP).
 static inline int page_up() {
@@ -113,6 +132,18 @@ extern "C" int veffchop_input(const Op1fInput* e) {
         return 0;                                        // the kit plays it
     }
     const int shift = e->shift || e->what == (u32)OP1F_DOWN_SHIFT || shift_held;
+    if (e->what != (u32)OP1F_TURN && e->key == (u32)DROP_KEY) {                // v6: the drop key, as docs/sample.md has it
+        if ((e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) && !shift) {
+            drop_down = shown_where;                     // taken on its down (shift and drop stays the unit's)
+            return 1;
+        }
+        if (e->what != (u32)OP1F_UP || !drop_down) return 0;   // an up comes for a down we took
+        const u32 place = drop_down;
+        drop_down = 0;
+        drop_answer = op1f_sample_drop(&op1f_card_veffchop, ASK, place);   // the ask: our drum engine, ask 0
+        drop_asked = (((drop_asked >> 8) + 1u) << 8) | (place & 0xffu);    // the answer first, then the word the frame watches
+        return 1;
+    }
     if (e->what == (u32)OP1F_TURN) {
         if (e->key > 3u) return 0;
         if (shift) turned_shift[e->key] = turned_shift[e->key] + e->turn;
@@ -244,7 +275,7 @@ static void apply(u32 ms) {
         for (int i = 0; i < 2 * KEYS; ++i) st.orig[s][i] = current[i];
         st.orig_words[s] = w.words; st.orig_valid[s] = 1;
     }
-    targets(sl, key_slice, st.orig[s], target);
+    targets(sl, key_slice, st.orig[s], target, capacity_of(w.stereo));   // v6: the mono capacity for a mono sample
     const int n = write_pairs(w.table, current, target);
     for (int i = 0; i < 2 * KEYS; ++i) st.written[s][i] = target[i];
     st.written_valid[s] = 1;
@@ -297,7 +328,6 @@ static void watch(u32 ms) {
         if (st.state != WAITING) { st.state = WAITING; st.seen_since = ms; st.seen_checks = 0; return; }
         ++st.seen_checks;
         if (ms - st.seen_since < (u32)STEADY_MS || st.seen_checks < 2) return;
-        if (why == MONO && w.words > 8u + (u32)MONO_CAPACITY) return;               // not a mono sample's words: wait on
         refuse((u32)why);
         return;
     }
@@ -316,10 +346,10 @@ static void watch(u32 ms) {
     if (st.state == STEADYING) {
         ++st.seen_checks;
         if (ms - st.seen_since < (u32)STEADY_MS || st.seen_checks < 2) return;
-        begin(an, st.at.frames);
+        begin(an, st.at.frames, st.at.stereo);
         st.state = ANALYSING; st.analyse_frames = 0;
-        op1f_log(3, LOG_FILE, 6, "veffchop: slot %u: %u frames, stereo; analysing %u windows, %u words a frame",
-                 st.at.slot + 1, st.at.frames, an.windows, (u32)BUDGET);
+        op1f_log(3, LOG_FILE, 6, "veffchop: slot %u: %u frames, %s%s; analysing %u windows, %u frames a frame",
+                 st.at.slot + 1, st.at.frames, st.at.stereo ? "stereo" : "mono", dropped_now[st.at.slot & 7u] ? ", a drop" : "", an.windows, (u32)BUDGET);
         return;
     }
     if (st.state == ANALYSING) {
@@ -368,6 +398,10 @@ static void paint(void* c, u32 ms, int shift) {
     tag[0] = 0;
     const int ready = st.state == READY;
     if (!page_up()) put(tag, 0, "DRUM ONLY");
+    else if (drop_ticket) put(tag, 0, "DROPPING");                                    // v6
+    else if (drop_message && ms - drop_message_at < (u32)NOTE_MS && drop_message == DM_DROPPED) put(tag, 0, "DROPPED");
+    else if (drop_message && ms - drop_message_at < (u32)NOTE_MS && drop_reason == OP1F_EMPTY) put(tag, 0, "NOTHING LIFTED");
+    else if (drop_message && ms - drop_message_at < (u32)NOTE_MS) put_num(tag, put(tag, 0, "DROP REFUSED -"), (u32)(-drop_reason));
     else if (st.note && ms - st.note_at < (u32)NOTE_MS) put(tag, 0, NOTE_TEXT[st.note]);
     else if (st.state == FINISHING) put(tag, 0, "ANALYSING 100%");
     else if (st.state == ANALYSING) put(tag, put_num(tag, put(tag, 0, "ANALYSING "), progress(an)), "%");
@@ -413,7 +447,6 @@ static void paint(void* c, u32 ms, int shift) {
     }
     if (st.state == REFUSED || st.state == WAITING || st.state == STEADYING) {
         veffui::text(c, WX, 70, st.state == REFUSED ? WHY_TEXT[st.why] : "WAITING FOR THE SAMPLE", VEFF_GREY, 3, 3);
-        if (st.state == REFUSED && st.why == MONO) veffui::text(c, WX, 96, "V1 CHOPS STEREO SAMPLES ONLY", VEFF_GREY, 2, 2);
         return;
     }
 
@@ -472,6 +505,52 @@ static void paint(void* c, u32 ms, int shift) {
     }
 }
 
+// ---------------------------------------------------------------- v6: the drop, by the base (docs/sample.md, base 40)
+// The input function asks op1f_sample_drop on the drop key's up (it only stores the answer); the frame function reads
+// op1f_sample_get until `done` is the ticket, then says how it ended and has the sample analysed again. Nothing of the
+// firmware's is called here: the unit does the drum sampler page's own drop in its turn.
+static u32 drop_seen;                                    // the last ask said
+static u32 drop_place, drop_at;
+static u32 drops_done, drops_refused;
+enum { DROP_WAIT_MS = 10000 };
+
+static void drop_frame(u32 ms) {
+    const u32 asked = drop_asked;
+    if (asked != drop_seen) {                            // (count << 8 | place) and the answer
+        drop_seen = asked;
+        const int answer = drop_answer;
+        const u32 place = asked & 0xffu;
+        if (answer > 0) {
+            drop_ticket = (u32)answer; drop_place = place; drop_at = ms;
+            op1f_log(3, LOG_FILE, 13, "veffchop: drop asked into drum %u: ticket %d", place - (u32)OP1F_PLACE_DRUM + 1u, answer);
+        } else {
+            ++drops_refused;
+            drop_message = DM_REFUSED; drop_reason = answer; drop_message_at = ms | 1u;
+            op1f_log(2, LOG_FILE, 12, "veffchop: drop into drum %u refused at once: %d (%s)", place - (u32)OP1F_PLACE_DRUM + 1u, answer,
+                     answer == OP1F_EMPTY ? "nothing lifted" : answer == OP1F_BUSY ? "busy" : answer == OP1F_NOT_HERE ? "the sound does not ride veffchop" :
+                     answer == OP1F_TOO_LARGE ? "too large" : answer == OP1F_BAD_NAME ? "this base drops into synth sounds only" : "see the base's sample line");
+        }
+    }
+    if (!drop_ticket) return;
+    Op1fSample got;
+    const int r = op1f_sample_get(&op1f_card_veffchop, drop_place, &got);
+    if (r == 0 && got.done == drop_ticket) {
+        const u32 slot = drop_place - (u32)OP1F_PLACE_DRUM;
+        if (got.answer >= 0) { ++drops_done; drop_message = DM_DROPPED; }
+        else { ++drops_refused; drop_message = DM_REFUSED; drop_reason = got.answer; }
+        drop_message_at = ms | 1u;
+        op1f_log(3, LOG_FILE, 14, "veffchop: drop %u into drum %u done: answer %d, dropped %u frames, stereo %u, after %u ms; %u done %u refused",
+                 drop_ticket, slot + 1u, got.answer, got.dropped, got.stereo, ms - drop_at, drops_done, drops_refused);
+        drop_ticket = 0;
+        st.at.obj = 0;                                   // seen anew: analysed again, never applied by itself
+        return;
+    }
+    if (ms - drop_at > (u32)DROP_WAIT_MS) {
+        op1f_log(2, LOG_FILE, 15, "veffchop: drop %u: no end after %u ms (get %d, done %u)", drop_ticket, ms - drop_at, r, r == 0 ? got.done : 0u);
+        drop_ticket = 0;
+    }
+}
+
 // ---------------------------------------------------------------- the frame
 extern "C" void veffchop_frame(const Op1fFrame* now) OP1F_NAMED("veffchop_frame");
 extern "C" void veffchop_frame(const Op1fFrame* now) {
@@ -489,6 +568,7 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         op1f_log(3, LOG_FILE, 8, "veffchop: drum engine page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
     }
     knobs();
+    drop_frame(now->ms);                                 // v6
     const u32 was = st.state;
     watch(now->ms);
     if (st.state == READY && was == READY && st.dirty) {    // v2: never in the frame the analysis ends

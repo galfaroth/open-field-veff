@@ -40,6 +40,7 @@ u32 host_rd32(u32 a) {
     return it->second;
 }
 u32 host_rd8(u32 a) { if (a == OBJ_AT + OFF_STEREO) return stereo_byte; ++wild; return 0; }
+static u32 stereo_byte_of() { return stereo_byte; }
 static u32 cur_slot() { return words_mem[CUR_SLOT]; }
 static u32 rec(u32 slot, u32 k, u32 off) { return words_mem[KEY_TABLE + slot * KIT_BYTES + k * KEY_BYTES + off]; }
 void host_wr32(u32 a, u32 v) {
@@ -59,6 +60,18 @@ extern "C" void op1f_log(int, const char*, int, const char* fmt, ...) {
 }
 extern "C" const Op1fCard op1f_card_veffchop = {};
 extern "C" int op1f_page_stand_in(const Op1fCard*, unsigned, void*) { return 1; }
+// v6: the base's sample helpers, stood in. get: the stood-in object's sample (its channels from the stereo byte, 0 or 1
+// as the base hands it), `dropped` and `done` as the test sets them. drop: the answer the test sets, the place noted.
+static u32 mock_dropped = 0, mock_done = 0, drop_calls = 0, drop_place_seen = 0;
+static int mock_drop_answer = 7, mock_answer = 0;
+static u32 stereo_byte_of();
+extern "C" int op1f_sample_get(const Op1fCard*, unsigned place, Op1fSample* out) {
+    if (place < 8u || place > 15u) return OP1F_BAD_NAME;
+    out->bytes = sizeof(Op1fSample); out->data = (const short*)(uintptr_t)0x86000000u; out->stereo = stereo_byte_of() ? 1u : 0u;
+    out->room = 0; out->capacity = 882000; out->dropped = mock_dropped; out->ticket = 0; out->done = mock_done; out->answer = mock_answer;
+    return 0;
+}
+extern "C" int op1f_sample_drop(const Op1fCard*, unsigned, unsigned place) { ++drop_calls; drop_place_seen = place; return mock_drop_answer; }
 
 // the canvas: drawn at 4x, kept at 2x
 enum { SS = 4, CW = 480 * SS, CH = 224 * SS };
@@ -218,6 +231,17 @@ int main(int argc, char** argv) {
             if (back + 1 < exact || back > exact + 1) ++bad;
         }
         CHECK(bad == 0, "q31_of_frame / frame_of_q31: %u wrong", bad);
+        u32 bad_mono = 0;                                // v6: the mono capacity, 529200
+        for (u32 f = 0; f <= 529200u; ++f) {
+            const uint64_t want = f >= 529200u ? 0x7fffffffu : ((uint64_t)f << 31) / 529200u;
+            if (q31_of_frame(f, 529200u) != want) ++bad_mono;
+            const u32 back = frame_of_q31((u32)want, 529200u);
+            const uint64_t exact = (want * 529200u) >> 31;
+            if (back + 1 < exact || back > exact + 1) ++bad_mono;
+        }
+        CHECK(bad_mono == 0, "mono q31_of_frame / frame_of_q31: %u wrong", bad_mono);
+        CHECK(capacity_of(1) == 882000u && capacity_of(0) == 529200u, "capacities");
+        std::printf("q31 mono: every frame 0..529200 exact (e.g. 516838 -> %08x)\n", q31_of_frame(516838, 529200u));
         std::printf("q31: every frame 0..882000 exact (e.g. 810082 -> %08x, 1 -> %08x)\n", q31_of_frame(810082), q31_of_frame(1));
         u32 bd = 0;
         for (int i = 0; i < 200000; ++i) { u32 n = (u32)(noise() * 2e9 + 2e9), d = (u32)((noise() + 1.0) * 1e6) + 1; if (udiv(n, d) != n / d) ++bd; }
@@ -470,18 +494,21 @@ int main(int argc, char** argv) {
     frame(1);
     picture("page-shift.ppm");
 
-    // ---- refused: mono, a strange stereo byte; then a stereo sample again
+    // ---- v6: a mono sample (a halfword a frame) is analysed and applied against the mono capacity, 529200 frames;
+    // then a strange stereo byte is refused, and a stereo sample analysed again
     {
         const u32 F = (u32)sample.size();
         setup_unit(1, F, 0);
-        for (int i = 0; i < 40; ++i) frame();
-        CHECK(st.state == REFUSED && st.why == MONO, "mono: state %u why %u", st.state, st.why);
+        until_ready();
+        CHECK(st.state == READY && st.at.stereo == 0 && an.frames == F && !an.stereo, "mono: state %u why %u frames %u", st.state, st.why, an.frames);
+        for (int i = 0; i < 3; ++i) frame();
         writes_seen = 0; press(3); frame();
-        CHECK(writes_seen == 0, "mono: a press wrote");
+        CHECK(writes_seen > 0, "mono: a press wrote nothing");
+        const int k0 = key_slice[0];
+        CHECK(k0 >= 0 && rec(1, 0, 4) == q31_of_frame(sl.start[k0], 529200u) && rec(1, 0, 8) == q31_of_frame(sl.end[k0], 529200u),
+              "mono: key 1 %08x-%08x, not its slice's Q31 of 529200", rec(1, 0, 4), rec(1, 0, 8));
+        std::printf("mono: %u frames, %u slices, key 1 %08x-%08x\n", F, sl.n, rec(1, 0, 4), rec(1, 0, 8));
         picture("page-mono.ppm");
-        setup_unit(1, F, 1); stereo_byte = 3;
-        for (int i = 0; i < 40; ++i) frame();
-        CHECK(st.state == REFUSED && st.why == BAD_STEREO, "stereo byte 3: state %u why %u", st.state, st.why);
         setup_unit(5, F, 1);
         until_ready();
         CHECK(st.state == READY && st.at.slot == 5, "slot 6 not analysed");
@@ -496,13 +523,41 @@ int main(int argc, char** argv) {
         setup_unit(2, F, 1);
         until_ready();
         u32 refused_seen = 0;
-        setup_unit(2, 700000, 1); stereo_byte = 0;                // 1,400,008 words, the byte 0: too many for a mono sample
-        for (int i = 0; i < 40; ++i) { frame(); if (st.state == REFUSED) ++refused_seen; }
+        setup_unit(2, 700000, 1); stereo_byte = 0;                // 1,400,008 words, the byte 0, for less than half a second
+        for (int i = 0; i < 10; ++i) { frame(); if (st.state == REFUSED) ++refused_seen; }
         setup_unit(2, 0, 1);                                       // the words 8 for a moment
         for (int i = 0; i < 5; ++i) { frame(); if (st.state == REFUSED) ++refused_seen; }
         setup_unit(2, F, 1);
         until_ready();
         CHECK(refused_seen == 0 && st.state == READY && st.at.slot == 2, "a reload was judged: refused %u times, state %u why %u", refused_seen, st.state, st.why);
+    }
+    // ---- v6: the drop through the base: the key's down taken, op1f_sample_drop on its up with the drum place and ask 0,
+    // the frame waits for `done`, then the sample is analysed again with the base's `dropped` as its length
+    {
+        const u32 F = (u32)sample.size();
+        setup_unit(2, F, 1);
+        until_ready();
+        Op1fInput e = {}; e.bytes = 36; e.mine = 1; e.key = 11;
+        e.what = OP1F_DOWN;
+        CHECK(veffchop_input(&e) == 1 && drop_calls == 0, "the drop key's down not taken, or asked at the down");
+        e.what = OP1F_UP;
+        CHECK(veffchop_input(&e) == 1 && drop_calls == 1 && drop_place_seen == shown_where, "asked %u into %u", drop_calls, drop_place_seen);
+        frame();
+        CHECK(drop_ticket == 7, "the ticket not waited for");
+        picture("page-dropping.ppm");
+        mock_dropped = F / 2; mock_done = 7; mock_answer = (int)(F / 2);
+        frame();
+        CHECK(drop_ticket == 0 && drops_done == 1, "the end not seen");
+        until_ready();
+        CHECK(st.state == READY && an.frames == F / 2, "not analysed again with the dropped length: %u", an.frames);
+        e.what = OP1F_DOWN; e.shift = 1;
+        CHECK(veffchop_input(&e) == 0, "shift and drop taken");
+        e.shift = 0; mock_drop_answer = OP1F_EMPTY;
+        e.what = OP1F_DOWN; veffchop_input(&e); e.what = OP1F_UP; veffchop_input(&e);
+        frame();
+        CHECK(drop_ticket == 0 && drops_refused == 1 && drop_reason == OP1F_EMPTY, "a refusal at once not seen");
+        picture("page-nothing-lifted.ppm");
+        mock_dropped = 0; mock_done = 0; mock_drop_answer = 7;
     }
     // ---- a long sample (the most a slot holds) within the budget
     {
