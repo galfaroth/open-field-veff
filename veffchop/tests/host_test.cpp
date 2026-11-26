@@ -489,6 +489,21 @@ int main(int argc, char** argv) {
         frame();
         CHECK(st.state == REFUSED && st.why == NO_SLOT, "slot 9 not refused");
     }
+    // ---- v5: a kit being loaded: a stereo sample's words with its stereo byte still 0, then no sample for a few frames,
+    // then the stereo byte set: never refused as mono or as no sample, analysed once it stays put
+    {
+        const u32 F = (u32)sample.size();
+        setup_unit(2, F, 1);
+        until_ready();
+        u32 refused_seen = 0;
+        setup_unit(2, 700000, 1); stereo_byte = 0;                // 1,400,008 words, the byte 0: too many for a mono sample
+        for (int i = 0; i < 40; ++i) { frame(); if (st.state == REFUSED) ++refused_seen; }
+        setup_unit(2, 0, 1);                                       // the words 8 for a moment
+        for (int i = 0; i < 5; ++i) { frame(); if (st.state == REFUSED) ++refused_seen; }
+        setup_unit(2, F, 1);
+        until_ready();
+        CHECK(refused_seen == 0 && st.state == READY && st.at.slot == 2, "a reload was judged: refused %u times, state %u why %u", refused_seen, st.state, st.why);
+    }
     // ---- a long sample (the most a slot holds) within the budget
     {
         max_words = 0;

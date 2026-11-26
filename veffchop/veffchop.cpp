@@ -28,7 +28,7 @@ typedef unsigned char u8;
 using namespace chop;
 
 static const char LOG_FILE[] = "op1f/veffchop.cpp";
-enum { ASK = 0, SLOTS = 8, STEADY_MS = 500, NOTE_MS = 2500,
+enum { ASK = 0, SLOTS = 8, MONO_CAPACITY = 529200, STEADY_MS = 500, NOTE_MS = 2500,
        OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, KEY_BYTES = 0x20, KIT_BYTES = 0x300, DATA_PAD = 16 };
 static const u32 HOLDERS = 0x0802f0acu, CUR_SLOT = 0x84a01528u, KEY_TABLE = 0x84a03cc8u;
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u, SDRAM_LO = 0x08000000u, SDRAM_HI = 0x08100000u;
@@ -283,9 +283,26 @@ static void refuse(u32 why) {
 static void watch(u32 ms) {
     Where w;
     const int why = locate(w);
-    const int same = w.slot == st.at.slot && w.obj == st.at.obj && w.data == st.at.data && w.words == st.at.words;
+    const int same = w.slot == st.at.slot && w.obj == st.at.obj && w.data == st.at.data && w.words == st.at.words && w.stereo == st.at.stereo;
+    if (why != OK && why != NO_SLOT && why != NO_OBJECT) {
+        // v5: a kit being loaded reads as no sample, or as mono, for a moment (the unit showed a stereo kit's words with
+        // its stereo byte still 0): judged only once its words and its stereo byte stayed put for STEADY_MS over two
+        // checks, and a sample too long for a mono one is never called mono.
+        if (!same) {
+            st.at.slot = w.slot; st.at.obj = w.obj; st.at.data = w.data; st.at.words = w.words; st.at.stereo = w.stereo;
+            st.state = WAITING; st.seen_since = ms; st.seen_checks = 0;
+            return;
+        }
+        if (st.state == REFUSED) return;                                             // judged already, nothing moved
+        if (st.state != WAITING) { st.state = WAITING; st.seen_since = ms; st.seen_checks = 0; return; }
+        ++st.seen_checks;
+        if (ms - st.seen_since < (u32)STEADY_MS || st.seen_checks < 2) return;
+        if (why == MONO && w.words > 8u + (u32)MONO_CAPACITY) return;               // not a mono sample's words: wait on
+        refuse((u32)why);
+        return;
+    }
     if (why != OK) {
-        st.at.slot = w.slot; st.at.obj = w.obj; st.at.data = w.data; st.at.words = w.words;
+        st.at.slot = w.slot; st.at.obj = w.obj; st.at.data = w.data; st.at.words = w.words; st.at.stereo = w.stereo;
         refuse((u32)why);
         return;
     }
@@ -295,7 +312,7 @@ static void watch(u32 ms) {
         st.state = STEADYING; st.seen_since = ms; st.seen_checks = 0; st.why_logged = 0;
         return;
     }
-    if (st.state == REFUSED) { st.state = STEADYING; st.seen_since = ms; st.seen_checks = 0; }
+    if (st.state == REFUSED || st.state == WAITING) { st.state = STEADYING; st.seen_since = ms; st.seen_checks = 0; }
     if (st.state == STEADYING) {
         ++st.seen_checks;
         if (ms - st.seen_since < (u32)STEADY_MS || st.seen_checks < 2) return;
