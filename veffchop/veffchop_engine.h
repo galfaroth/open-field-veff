@@ -31,6 +31,7 @@ enum {
     MIN_Q = 0x00100000,        // the stock edit's least length, Q31
     MIN_FRAMES = 882,          // 20 ms: no slice shorter (well over MIN_Q's 431 frames)
     BUDGET = 4096,             // words of the sample read a frame at most
+    FINISH_BUDGET = 256,       // windows finish_step() looks at a frame, in each of its two passes (v2)
     LOCAL = 6,
     PRE = 64,                  // frames a cut lies before the first loud frame                 // a candidate is the largest rise within +-6 windows (30 ms)
     NONE = 255,
@@ -91,6 +92,7 @@ struct Analysis {
     u32 cpos[MAX_CAND];                 // the cut, frames
     u16 cstr[MAX_CAND];                 // 0..1024
     u32 rise[ENV_MAX];                  // scratch for finish()
+    u32 fpass, fat;                     // finish_step(): the pass (0 rises, 1 candidates, 2 done) and the window reached
 };
 
 static inline void begin(Analysis& a, u32 frames) {
@@ -100,7 +102,7 @@ static inline void begin(Analysis& a, u32 frames) {
     a.read = 0; a.complete = 0;
     a.col_scale = frames ? udiv((u32)COLS << 20, frames) : 0;
     a.acc = 0; a.in_win = 0; a.w = 0; a.first = NONE; a.last = NONE; a.count = 0; a.prev_sign = 0; a.jthr = 300; a.jat = NONE;
-    a.peak_env = 0; a.words_read_last = 0; a.ncand = 0; a.max_rise = 0;
+    a.peak_env = 0; a.words_read_last = 0; a.ncand = 0; a.max_rise = 0; a.fpass = 0; a.fat = 0;
     for (u32 i = 0; i < (u32)COLS; ++i) a.col[i] = 0;
 }
 
@@ -158,50 +160,69 @@ static inline u32 progress(const Analysis& a) { return a.frames ? udiv((a.read >
 
 // The candidate onsets: where two windows' sum rises over the two before by half again, and the rise is the largest
 // within +-LOCAL windows. Its strength is the rise against the largest rise, 0..1024.
-static inline void finish(Analysis& a) {
+// v2: spread over frames, at most `budget` windows a call in each pass (the first pass the rises, the second the
+// candidates). Answers 1 when the candidates are all there. The same result as finish() in one go.
+static inline int finish_step(Analysis& a, u32 budget) {
     const u32 nw = a.w < a.windows ? a.w : a.windows;
     const u32 floor = a.peak_env >> 6;                              // under -36 dB of the loudest window: no onset
-    a.max_rise = 0;
-    for (u32 i = 0; i < nw; ++i) {
-        const u32 d = a.env[i] + (i + 1 < nw ? a.env[i + 1] : a.env[i]);
-        const u32 p = (i >= 1 ? a.env[i - 1] : 0) + (i >= 2 ? a.env[i - 2] : 0);
-        u32 r = 0;
-        if (d > p && (d >> 1) > floor && (d >> 1) + (d >> 2) > p) r = d - p;   // d > p * 4/3 at the least, cheap
-        if (i == 0 && d) r = d;                                     // the sample's start counts as a hit
-        a.rise[i] = r;
-        if (r > a.max_rise) a.max_rise = r;
-    }
-    a.ncand = 0;
-    for (u32 i = 0; i < nw && a.ncand < (u32)MAX_CAND; ++i) {
-        const u32 r = a.rise[i];
-        if (!r) continue;
-        int top = 1;
-        const u32 lo = i > (u32)LOCAL ? i - LOCAL : 0, hi = i + LOCAL < nw ? i + LOCAL : nw - 1;
-        for (u32 j = lo; j <= hi && top; ++j) {
-            if (j < i && a.rise[j] >= r) top = 0;                  // the earlier of two equal rises wins
-            if (j > i && a.rise[j] > r) top = 0;
+    if (a.fpass == 0) {
+        if (a.fat == 0) a.max_rise = 0;
+        u32 end = a.fat + budget;
+        if (end > nw) end = nw;
+        for (u32 i = a.fat; i < end; ++i) {
+            const u32 d = a.env[i] + (i + 1 < nw ? a.env[i + 1] : a.env[i]);
+            const u32 p = (i >= 1 ? a.env[i - 1] : 0) + (i >= 2 ? a.env[i - 2] : 0);
+            u32 r = 0;
+            if (d > p && (d >> 1) > floor && (d >> 1) + (d >> 2) > p) r = d - p;   // d > p * 4/3 at the least, cheap
+            if (i == 0 && d) r = d;                                 // the sample's start counts as a hit
+            a.rise[i] = r;
+            if (r > a.max_rise) a.max_rise = r;
         }
-        if (!top) continue;
-        // the largest rise can lie a window or two after the attack began: the cut goes to the earliest of the two
-        // windows before it whose sum at least doubles the one before (and stands over the floor)
-        u32 at = i;
-        for (u32 j = i >= 2 ? i - 2 : 0; j < i; ++j) {
-            const u32 before = j ? a.env[j - 1] : 0;
-            if (a.env[j] > (floor >> 2) && a.env[j] > 2 * before + (floor >> 4)) { at = j; break; }
-        }
-        u32 s = a.max_rise ? udiv((r >> 6) * 1024u, (a.max_rise >> 6) + 1) : 0;   // sums < 2^24: (r>>6)*1024 fits
-        if (s > 1024) s = 1024;
-        if (!s) s = 1;
-        // to the frame: the first loud frame of that window, or of the window before when it lies at its very end
-        u32 pos = at * WIN + (a.jump[at] != (u8)NONE ? a.jump[at] : 0);
-        if ((a.jump[at] == (u8)NONE || a.jump[at] < 8) && at && a.jump[at - 1] != (u8)NONE && a.jump[at - 1] + 40u > (u32)WIN)
-            pos = (at - 1) * WIN + a.jump[at - 1];
-        pos = pos > (u32)PRE ? pos - PRE : 0;
-        a.cpos[a.ncand] = pos;
-        a.cstr[a.ncand] = (u16)s;
-        ++a.ncand;
+        a.fat = end;
+        if (a.fat < nw) return 0;
+        a.fpass = 1; a.fat = 0; a.ncand = 0;
+        return 0;
     }
+    if (a.fpass == 1) {
+        u32 end = a.fat + budget;
+        if (end > nw) end = nw;
+        for (u32 i = a.fat; i < end && a.ncand < (u32)MAX_CAND; ++i) {
+            const u32 r = a.rise[i];
+            if (!r) continue;
+            int top = 1;
+            const u32 lo = i > (u32)LOCAL ? i - LOCAL : 0, hi = i + LOCAL < nw ? i + LOCAL : nw - 1;
+            for (u32 j = lo; j <= hi && top; ++j) {
+                if (j < i && a.rise[j] >= r) top = 0;              // the earlier of two equal rises wins
+                if (j > i && a.rise[j] > r) top = 0;
+            }
+            if (!top) continue;
+            // the largest rise can lie a window or two after the attack began: the cut goes to the earliest of the two
+            // windows before it whose sum at least doubles the one before (and stands over the floor)
+            u32 at = i;
+            for (u32 j = i >= 2 ? i - 2 : 0; j < i; ++j) {
+                const u32 before = j ? a.env[j - 1] : 0;
+                if (a.env[j] > (floor >> 2) && a.env[j] > 2 * before + (floor >> 4)) { at = j; break; }
+            }
+            u32 s = a.max_rise ? udiv((r >> 6) * 1024u, (a.max_rise >> 6) + 1) : 0;   // sums < 2^24: (r>>6)*1024 fits
+            if (s > 1024) s = 1024;
+            if (!s) s = 1;
+            // to the frame: the first loud frame of that window, or of the window before when it lies at its very end
+            u32 pos = at * WIN + (a.jump[at] != (u8)NONE ? a.jump[at] : 0);
+            if ((a.jump[at] == (u8)NONE || a.jump[at] < 8) && at && a.jump[at - 1] != (u8)NONE && a.jump[at - 1] + 40u > (u32)WIN)
+                pos = (at - 1) * WIN + a.jump[at - 1];
+            pos = pos > (u32)PRE ? pos - PRE : 0;
+            a.cpos[a.ncand] = pos;
+            a.cstr[a.ncand] = (u16)s;
+            ++a.ncand;
+        }
+        a.fat = end;
+        if (a.fat < nw && a.ncand < (u32)MAX_CAND) return 0;
+        a.fpass = 2;
+    }
+    return 1;
 }
+
+static inline void finish(Analysis& a) { a.fpass = 0; a.fat = 0; while (!finish_step(a, 0x7fffffffu)) {} }
 
 // ---------------------------------------------------------------- slicing
 

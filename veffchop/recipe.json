@@ -1,7 +1,7 @@
 {
-  "about": "veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3. A sequencer for the drum that plays nothing itself and lets every key through; its page shows the sample's wave, the cuts as the knobs move them and which slice each key plays. Modes: transient (sensitivity), lazy (zero crossings, short slices merged), equal (N parts); mapping in order or onto the stock kit's layout, with or without wrap. A press of the fourth knob writes the 24 start/end points of the current slot; shift and that press puts the kit's own back. It changes no place of the firmware and needs the base.",
+  "about": "veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3. Version 2: the drum's page (base 40): its page stands in for the drum sampler's page on T1 in the drum's mode, plays nothing itself and lets every keyboard key through to the kit; it shows the sample's wave, the cuts as the knobs move them and which slice each key plays. Modes: transient (sensitivity), lazy (zero crossings, short slices merged), equal (N parts); mapping in order or onto the stock kit's layout, with or without wrap. A press of the fourth knob writes the 24 start/end points of the current slot; shift and that press puts the kit's own back. It changes no place of the firmware and needs base 40.",
   "name": "veffchop",
-  "version": 1,
+  "version": 2,
   "interface": 1,
   "build": "veff_veffchop",
   "sources": [
@@ -13,7 +13,7 @@
   "exports": [],
   "pictures": [],
   "card": {
-    "level": 5,
+    "level": 10,
     "frame": "veffchop_frame",
     "pick": null,
     "pictures": false,
@@ -25,16 +25,9 @@
     ],
     "asks": [
       {
-        "kind": "sequencer",
+        "kind": "drum page",
         "name": "veffchop",
-        "synth_only": false,
-        "all_midi": false,
-        "shown": "veffchop_shown",
-        "tick": null,
-        "key": "veffchop_key",
-        "run": null,
-        "octave": null,
-        "playing": null
+        "shown": "veffchop_shown"
       }
     ]
   },

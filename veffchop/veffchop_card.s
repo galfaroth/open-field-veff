@@ -7,20 +7,31 @@
  * of them a name stands for; 0 for each the pack has not.
  * Level 2 (module/build_m2_card.h): behind those three, the function a key or a knob is offered to.
  * Level 3 (module/build_m3_card.h): behind it, the pack's list of folders and how many it holds; the list follows the card.
- * Level 4: behind them, the pack's list of asks and how many it holds. Level 5 (module/build_r3_card.h): an ask is
- * a sequencer or the notes heard; the list follows the card, and each ask's table follows the list.
+ * Level 4: behind them, the pack's list of asks and how many it holds. Level 10 (module/build_r6e_card.h): an ask is
+ * a sequencer, the notes heard, a sound stage, working memory, pictures that take a place, values kept in the
+ * unit's files, an effect in the unit's lists of effects or a synth engine in its list of engines; the list follows
+ * the card, each ask's table follows the list, the list of names of an ask of places follows its table, and an
+ * engine's list of sounds and their texts follow its table.
+ * Level 10 adds no kind of ask: its mark is that of a base that offers op1f_param_heard, the value as heard.
+ * Base 40 (module/build_r6e_card.h, "Base 40: the drum's page"): the card asks for the drum's page, so a
+ * word in front of it names the mark op1f_drum_page_1, and a base before 40 leaves the pack out. Nothing reads it.
  */
 .section .rodata
 .balign 4
 .global op1f_card_veffchop_level
 .type op1f_card_veffchop_level, STT_OBJECT
 op1f_card_veffchop_level:
-    .long op1f_level_5
+    .long op1f_level_10
 .size op1f_card_veffchop_level, .-op1f_card_veffchop_level
+.global op1f_card_veffchop_drum_page
+.type op1f_card_veffchop_drum_page, STT_OBJECT
+op1f_card_veffchop_drum_page:
+    .long op1f_drum_page_1
+.size op1f_card_veffchop_drum_page, .-op1f_card_veffchop_drum_page
 .global op1f_card_veffchop
 .type op1f_card_veffchop, STT_OBJECT
 op1f_card_veffchop:
-    .long 0x44524143, 64, 5, 1
+    .long 0x44524143, 64, 10, 2
     .ascii "veffchop"
     .fill 8, 1, 0
     .long veffchop_frame
@@ -44,19 +55,14 @@ op1f_card_veffchop_folders:
 .global op1f_card_veffchop_asks
 .type op1f_card_veffchop_asks, STT_OBJECT
 op1f_card_veffchop_asks:
-    .long 1, 48, op1f_card_veffchop_ask_0
+    .long 12, 28, op1f_card_veffchop_ask_0
 .size op1f_card_veffchop_asks, .-op1f_card_veffchop_asks
 .global op1f_card_veffchop_ask_0
 .type op1f_card_veffchop_ask_0, STT_OBJECT
 op1f_card_veffchop_ask_0:
-    .long 48
+    .long 28
     .ascii "veffchop"
     .fill 8, 1, 0
     .long 0
     .long veffchop_shown
-    .long 0
-    .long veffchop_key
-    .long 0
-    .long 0
-    .long 0
 .size op1f_card_veffchop_ask_0, .-op1f_card_veffchop_ask_0

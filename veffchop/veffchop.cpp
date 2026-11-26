@@ -1,6 +1,6 @@
-// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. A sequencer of
-// level 5 for the drum: it plays nothing itself, lets every key through to the kit, and its page stands in for the
-// sequencer's screen. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
+// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 2: the
+// drum's page (base 40, OP1F_ASK_DRUM_PAGE, docs/drum-page.md): its page stands in for the drum sampler's page on T1 in
+// the drum's mode; it plays nothing itself and lets every keyboard key through to the kit. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
 //
 //   CUR_SLOT   [0x84a01528]: the drum slot being edited, 0..7
 //   HOLDERS    0x0802f0ac + 4 s: the slot's holder; [holder] the object; [object] the data (int16 L,R from data + 16),
@@ -14,8 +14,9 @@
 // The sample is read once (when its words changed and then stayed put for half a second), on the display thread,
 // at most chop::BUDGET words a frame (veffchop_engine.h); the knobs only filter what that reading found.
 //
-// Threads: key (the audio or key thread) notes the key struck in one word and lets it through; input (the key
-// thread) counts turns and presses in single words; the frame function does all the rest.
+// Threads: input (the key thread for knobs, maybe the audio thread for the keyboard's keys 13 to 53) counts turns and
+// presses and notes the key struck, each in single words, and lets the keyboard's keys through; the frame function
+// does all the rest. Version 2 also builds the candidates over frames (finish_step, FINISH_BUDGET windows a frame).
 
 #include "build_r6e_card.h"
 #include "veff_ui.h"
@@ -26,7 +27,7 @@ typedef unsigned char u8;
 using namespace chop;
 
 static const char LOG_FILE[] = "op1f/veffchop.cpp";
-enum { ASK = 0, HOST_DRUM = 1, SLOTS = 8, STEADY_MS = 500, NOTE_MS = 2500,
+enum { ASK = 0, SLOTS = 8, STEADY_MS = 500, NOTE_MS = 2500,
        OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, KEY_BYTES = 0x20, KIT_BYTES = 0x300, DATA_PAD = 16 };
 static const u32 HOLDERS = 0x0802f0acu, CUR_SLOT = 0x84a01528u, KEY_TABLE = 0x84a03cc8u;
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u, SDRAM_LO = 0x08000000u, SDRAM_HI = 0x08100000u;
@@ -79,23 +80,30 @@ static int locate(Where& w) {
 
 // ---------------------------------------------------------------- what the other threads hand over (single words)
 static volatile u32 shown_where, shown_how;
-static volatile u32 struck;                              // (count << 8) | key, of the last key down
+static volatile u32 struck;                              // (count << 8) | the keyboard key's number, of the last key down
 static volatile int turned[4], turned_shift[4];          // turns, 1024 a step, summed
 static volatile u32 pressed[4], pressed_shift[4];        // presses counted
 
-extern "C" int veffchop_key(const Op1fKey* e) OP1F_NAMED("veffchop_key");
-extern "C" int veffchop_key(const Op1fKey* e) {
-    if (e->bytes < 32u || e->host != (u32)HOST_DRUM || e->what != (u32)OP1F_DOWN || e->key < 0 || e->key > 23) return 0;
-    struck = (((struck >> 8) + 1u) << 8) | (u32)e->key;
-    return 0;                                            // the kit plays it
+// The drum's page is up: shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP).
+static inline int page_up() {
+    const u32 w = shown_where;
+    return (shown_how & (u32)OP1F_SHOWN_UP) && w >= (u32)OP1F_PLACE_DRUM && w < (u32)OP1F_PLACE_DRUM + (u32)SLOTS;
 }
 
 extern "C" void veffchop_shown(unsigned where, unsigned how) OP1F_NAMED("veffchop_shown");
 extern "C" void veffchop_shown(unsigned where, unsigned how) { shown_where = where; shown_how = how; }
 
+// The keyboard's keys (13 to 53 but shift, 38) are let through so the kit plays them; their number is noted for the
+// highlight. They may come on the audio thread: one word written, nothing else. The knobs and their clicks are taken.
+enum { KEYBOARD_LO = 13, KEYBOARD_HI = 53, SHIFT_KEY = 38 };
 extern "C" int veffchop_input(const Op1fInput* e) OP1F_NAMED("veffchop_input");
 extern "C" int veffchop_input(const Op1fInput* e) {
-    if (e->bytes < 36u || !e->mine || shown_where != (u32)HOST_DRUM) return 0;
+    if (e->bytes < 36u || !e->mine || !page_up()) return 0;
+    if (e->what != (u32)OP1F_TURN && e->key >= (u32)KEYBOARD_LO && e->key <= (u32)KEYBOARD_HI) {
+        if (e->key != (u32)SHIFT_KEY && (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT))
+            struck = (((struck >> 8) + 1u) << 8) | (e->key & 0xffu);
+        return 0;                                        // the kit plays it
+    }
     const int shift = e->shift || e->what == (u32)OP1F_DOWN_SHIFT;
     if (e->what == (u32)OP1F_TURN) {
         if (e->key > 3u) return 0;
@@ -113,8 +121,16 @@ extern "C" int veffchop_input(const Op1fInput* e) {
     return 0;
 }
 
+// The drum key (0..23) of a keyboard key's number. NOT CONFIRMED ON A UNIT: the firmware's numbers of the 24 keys are
+// taken to run 13 up from the lowest key, shift (38) skipped; every new number is logged (line 9) to settle it.
+static int drum_key_of(u32 n) {
+    if (n < (u32)KEYBOARD_LO || n > (u32)KEYBOARD_HI || n == (u32)SHIFT_KEY) return -1;
+    const int k = (int)n - KEYBOARD_LO - (n > (u32)SHIFT_KEY ? 1 : 0);
+    return k < KEYS ? k : -1;
+}
+
 // ---------------------------------------------------------------- the frame function's own
-enum State { WAITING = 0, STEADYING, ANALYSING, READY, REFUSED };
+enum State { WAITING = 0, STEADYING, ANALYSING, READY, REFUSED, FINISHING };
 static Analysis an;
 static Slices sl;
 static int key_slice[KEYS];
@@ -128,7 +144,8 @@ static struct {
     int turn_seen[4], turn_shift_seen[4], turn_rest[4], turn_shift_rest[4];
     u32 press_seen[4], press_shift_seen[4];
     u32 note, note_at;                                   // a word on the page for a moment: APPLIED, UNDONE, ...
-    u32 struck_seen, struck_key, struck_at, struck_valid;
+    u32 struck_seen, struck_key, struck_at, struck_valid, keys_logged[2];
+    u32 shown_where_seen, shown_how_seen;
     // the kit's own pairs, kept at the first apply to a slot's sample: undo puts them back
     u32 orig_words[SLOTS], orig_valid[SLOTS];
     u32 orig[SLOTS][2 * KEYS];
@@ -273,8 +290,12 @@ static void watch(u32 ms) {
     }
     if (st.state == ANALYSING) {
         ++st.analyse_frames;
-        if (step(an, sample_rd, st.at.data + DATA_PAD, BUDGET)) {
-            finish(an);
+        if (step(an, sample_rd, st.at.data + DATA_PAD, BUDGET)) st.state = FINISHING;
+        return;
+    }
+    if (st.state == FINISHING) {                         // v2: the candidates built over frames
+        ++st.analyse_frames;
+        if (finish_step(an, FINISH_BUDGET)) {
             st.state = READY; st.dirty = 1;
             op1f_log(3, LOG_FILE, 7, "veffchop: slot %u analysed in %u frames: %u candidates, loudest window %u",
                      st.at.slot + 1, st.analyse_frames, an.ncand, an.peak_env);
@@ -312,8 +333,9 @@ static void paint(void* c, u32 ms, int shift) {
     char tag[32];
     tag[0] = 0;
     const int ready = st.state == READY;
-    if (shown_where != (u32)HOST_DRUM) put(tag, 0, "DRUM ONLY");
+    if (!page_up()) put(tag, 0, "DRUM ONLY");
     else if (st.note && ms - st.note_at < (u32)NOTE_MS) put(tag, 0, NOTE_TEXT[st.note]);
+    else if (st.state == FINISHING) put(tag, 0, "ANALYSING 100%");
     else if (st.state == ANALYSING) put(tag, put_num(tag, put(tag, 0, "ANALYSING "), progress(an)), "%");
     else if (st.state == STEADYING) put(tag, 0, "WAITING");
     else if (st.state == REFUSED) put(tag, 0, WHY_TEXT[st.why]);
@@ -351,8 +373,8 @@ static void paint(void* c, u32 ms, int shift) {
     }
     op1f_paint_line(c, 444, 8, 444, 36, 1, VEFF_PINK);
 
-    if (shown_where != (u32)HOST_DRUM) {
-        veffui::text(c, WX, 70, "CHOOSE VEFFCHOP AS THE DRUM'S SEQUENCER", VEFF_WHITE, 2, 2);
+    if (!page_up()) {
+        veffui::text(c, WX, 70, "T1 OF THE DRUM SAMPLER ONLY", VEFF_WHITE, 2, 2);
         return;
     }
     if (st.state == REFUSED || st.state == WAITING || st.state == STEADYING) {
@@ -380,7 +402,7 @@ static void paint(void* c, u32 ms, int shift) {
         }
         op1f_paint_box(c, WX + 2 * i, WMID - (int)h, 2, 2 * (int)h + 1, colour);
     }
-    if (st.state == ANALYSING) {
+    if (st.state == ANALYSING || st.state == FINISHING) {
         const int x = x_of(an.read);
         op1f_paint_line(c, x, WY0, x, WMID + WHALF, 1, VEFF_PINK);
         return;
@@ -428,9 +450,14 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         return;                                          // nothing else in the first frame
     }
     if (!st.stood && op1f_page_stand_in(&op1f_card_veffchop, ASK, 0)) st.stood = 1;
+    if (shown_where != st.shown_where_seen || shown_how != st.shown_how_seen) {
+        st.shown_where_seen = shown_where; st.shown_how_seen = shown_how;
+        op1f_log(3, LOG_FILE, 8, "veffchop: drum page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
+    }
     knobs();
+    const u32 was = st.state;
     watch(now->ms);
-    if (st.state == READY && st.dirty) {
+    if (st.state == READY && was == READY && st.dirty) {    // v2: never in the frame the analysis ends
         st.dirty = 0;
         slice(an, st.p, sl);
         map(an, sl, st.p.map, key_slice);
@@ -439,11 +466,20 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         const u32 p = pressed[i], ps = pressed_shift[i];
         const int hit = p != st.press_seen[i], hit_s = ps != st.press_shift_seen[i];
         st.press_seen[i] = p; st.press_shift_seen[i] = ps;
-        if (i == 3 && hit && shown_where == (u32)HOST_DRUM) apply(now->ms);
-        if (i == 3 && hit_s && shown_where == (u32)HOST_DRUM) undo(now->ms);
+        if (i == 3 && hit && page_up()) apply(now->ms);
+        if (i == 3 && hit_s && page_up()) undo(now->ms);
     }
     const u32 sk = struck;
-    if (sk != st.struck_seen) { st.struck_seen = sk; st.struck_key = sk & 0xffu; st.struck_at = now->ms; st.struck_valid = st.struck_key < (u32)KEYS; }
+    if (sk != st.struck_seen) {
+        st.struck_seen = sk;
+        const u32 n = sk & 0xffu;
+        const int k = drum_key_of(n);
+        st.struck_at = now->ms; st.struck_valid = k >= 0; st.struck_key = k >= 0 ? (u32)k : 0;
+        if (n < 64u && !(st.keys_logged[n >> 5] & (1u << (n & 31u)))) {     // each number once: the key map, to settle
+            st.keys_logged[n >> 5] |= 1u << (n & 31u);
+            op1f_log(3, LOG_FILE, 9, "veffchop: keyboard key %u struck, taken as drum key %d (0: none)", n, k + 1);
+        }
+    }
     if (now->page != &op1f_card_veffchop || !now->canvas) return;
     paint(now->canvas, now->ms, now->shift != 0);
 }

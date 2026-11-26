@@ -177,12 +177,20 @@ static void press(int knob, int shift = 0) {
     veffchop_input(&e);
     e.what = OP1F_UP; veffchop_input(&e);
 }
-static void strike(int k) { Op1fKey e = {}; e.bytes = sizeof e; e.what = OP1F_DOWN; e.host = 1; e.key = k; e.velocity = 100; CHECK(veffchop_key(&e) == 0, "a key was taken"); }
+// v2: a keyboard key reaches the card's input function (13 up from the lowest key, provisional) and is let through
+static void strike(int k) {
+    unsigned rec[4] = { 13u + (unsigned)k, 100u, 0u, 0u };
+    Op1fInput e = {}; e.bytes = sizeof e; e.mine = 1; e.what = OP1F_DOWN; e.key = 13u + (unsigned)k; e.record = rec;
+    CHECK(veffchop_input(&e) == 0, "keyboard key %d was taken", k);
+    e.what = OP1F_UP; e.record = 0;
+    CHECK(veffchop_input(&e) == 0, "keyboard key %d's up was taken", k);
+}
 static void set(int knob, int value_now, int want, int shift = 0) { turn(knob, want - value_now, shift); }
+static int finishing_frames = 0;
 static int until_ready(int most = 2000) {
     int n = 1;
     frame();
-    while (st.state != READY && n < most) { frame(); ++n; }
+    while (st.state != READY && n < most) { const int f = st.state == FINISHING; frame(); finishing_frames += f; ++n; }
     frame();
     return n;
 }
@@ -224,7 +232,25 @@ int main(int argc, char** argv) {
     frame();
     CHECK(!log_lines.empty() && log_lines[0] == "veffchop: start", "the first line is '%s'", log_lines.empty() ? "" : log_lines[0].c_str());
     CHECK(words_read == 0 && wild == 0, "the first frame read %u sample words, %ld wild", words_read, wild);
+    // v2: the drum's page: off until shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP); a turn is not taken while it is off
+    {
+        Op1fInput e = {}; e.bytes = sizeof e; e.mine = 1; e.what = OP1F_TURN; e.key = 0; e.turn = 1024;
+        CHECK(veffchop_input(&e) == 0, "a turn taken before the page is up");
+    }
+    veffchop_shown(OP1F_PLACE_DRUM + 1, OP1F_SHOWN_UP);
+    CHECK(page_up(), "the page is not up at where %u", (u32)OP1F_PLACE_DRUM + 1);
     veffchop_shown(1, OP1F_SHOWN_UP);
+    CHECK(!page_up(), "a synth place taken for the drum's");
+    veffchop_shown(OP1F_PLACE_DRUM + 1, 0);
+    CHECK(!page_up(), "the page up after shown(.., 0)");
+    veffchop_shown(OP1F_PLACE_DRUM, OP1F_SHOWN_UP);
+    {
+        Op1fInput e = {}; e.bytes = sizeof e; e.mine = 1; e.what = OP1F_DOWN; e.key = 38;
+        CHECK(veffchop_input(&e) == 0, "shift taken");
+        e.key = 53; CHECK(veffchop_input(&e) == 0, "key 53 taken");
+        e.what = OP1F_TURN; e.key = 3; e.turn = 0; CHECK(veffchop_input(&e) == 1, "a turn of the fourth knob not taken");
+        CHECK(drum_key_of(13) == 0 && drum_key_of(36) == 23 && drum_key_of(38) == -1 && drum_key_of(12) == -1 && drum_key_of(54) == -1, "drum_key_of");
+    }
 
     // ---- waiting, then analysing within the budget
     int waited = 0;
@@ -234,6 +260,20 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 20; ++i) frame();
     picture("page-analysing.ppm");
     const int took = until_ready();
+    // v2: the candidates built over frames, the same as in one go
+    {
+        static Analysis again;
+        std::memcpy(&again, &an, sizeof an);
+        finish(again);
+        bool same = again.ncand == an.ncand && again.max_rise == an.max_rise;
+        for (u32 i = 0; same && i < an.ncand; ++i) same = again.cpos[i] == an.cpos[i] && again.cstr[i] == an.cstr[i];
+        CHECK(same, "finish_step over frames gave %u candidates, finish() %u", an.ncand, again.ncand);
+        const u32 nw = an.w < an.windows ? an.w : an.windows;
+        const int want = (int)(2 * ((nw + FINISH_BUDGET - 1) / FINISH_BUDGET));
+        std::printf("candidates: %u windows in %d frames of at most %u windows a pass\n", nw, finishing_frames, (u32)FINISH_BUDGET);
+        CHECK(finishing_frames >= want - 1 && finishing_frames <= want + 1, "the candidates took %d frames, not about %d", finishing_frames, want);
+        CHECK(sl.n > 0 || st.p.mode != EQUAL, "no slices after the analysis");
+    }
     std::printf("analysis: %u frames read in %d display frames, at most %u words a frame; %u candidates\n", an.frames, took + 21, max_words, an.ncand);
     CHECK(max_words <= (u32)BUDGET, "a frame read %u words", max_words);
     CHECK(wild == 0, "%ld reads outside the stood-in memory", wild);
