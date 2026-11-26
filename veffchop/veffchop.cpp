@@ -1,6 +1,7 @@
-// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 2: the
-// drum's page (base 40, OP1F_ASK_DRUM_PAGE, docs/drum-page.md): its page stands in for the drum sampler's page on T1 in
-// the drum's mode; it plays nothing itself and lets every keyboard key through to the kit. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
+// veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 4: a drum
+// engine (base 40, OP1F_ASK_DRUM_ENGINE, docs/drum-engine.md): 'veffchop' stands in the drum's engine list, rides the
+// drum sampler, and once picked on a drum sound its page stands on T1 in the drum's mode; it plays nothing itself and
+// lets every keyboard key through to the kit. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
 //
 //   CUR_SLOT   [0x84a01528]: the drum slot being edited, 0..7
 //   HOLDERS    0x0802f0ac + 4 s: the slot's holder; [holder] the object; [object] the data (int16 L,R from data + 16),
@@ -86,7 +87,7 @@ static volatile u32 pressed[4], pressed_shift[4];        // presses counted
 static volatile u32 shift_held;                          // v3: shift (key 38) down, seen by its own down and up
 static volatile u32 press4_how;                          // v3: (count << 8) | how the last press of the 4th knob saw shift
 
-// The drum's page is up: shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP).
+// The drum engine's page is up: shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP).
 static inline int page_up() {
     const u32 w = shown_where;
     return (shown_how & (u32)OP1F_SHOWN_UP) && w >= (u32)OP1F_PLACE_DRUM && w < (u32)OP1F_PLACE_DRUM + (u32)SLOTS;
@@ -468,7 +469,7 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
     if (!st.stood && op1f_page_stand_in(&op1f_card_veffchop, ASK, 0)) st.stood = 1;
     if (shown_where != st.shown_where_seen || shown_how != st.shown_how_seen) {
         st.shown_where_seen = shown_where; st.shown_how_seen = shown_how;
-        op1f_log(3, LOG_FILE, 8, "veffchop: drum page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
+        op1f_log(3, LOG_FILE, 8, "veffchop: drum engine page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
     }
     knobs();
     const u32 was = st.state;

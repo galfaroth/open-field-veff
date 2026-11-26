@@ -13,8 +13,8 @@
  * the card, each ask's table follows the list, the list of names of an ask of places follows its table, and an
  * engine's list of sounds and their texts follow its table.
  * Level 10 adds no kind of ask: its mark is that of a base that offers op1f_param_heard, the value as heard.
- * Base 40 (module/build_r6e_card.h, "Base 40: the drum's page"): the card asks for the drum's page, so a
- * word in front of it names the mark op1f_drum_page_1, and a base before 40 leaves the pack out. Nothing reads it.
+ * Base 40 (module/build_r6e_card.h, "Base 40: a drum engine"): the card asks for a drum engine, so a
+ * word in front of it names the mark op1f_drum_engine_1, and a base before 40 leaves the pack out. Nothing reads it.
  */
 .section .rodata
 .balign 4
@@ -23,15 +23,15 @@
 op1f_card_veffchop_level:
     .long op1f_level_10
 .size op1f_card_veffchop_level, .-op1f_card_veffchop_level
-.global op1f_card_veffchop_drum_page
-.type op1f_card_veffchop_drum_page, STT_OBJECT
-op1f_card_veffchop_drum_page:
-    .long op1f_drum_page_1
-.size op1f_card_veffchop_drum_page, .-op1f_card_veffchop_drum_page
+.global op1f_card_veffchop_drum_engine
+.type op1f_card_veffchop_drum_engine, STT_OBJECT
+op1f_card_veffchop_drum_engine:
+    .long op1f_drum_engine_1
+.size op1f_card_veffchop_drum_engine, .-op1f_card_veffchop_drum_engine
 .global op1f_card_veffchop
 .type op1f_card_veffchop, STT_OBJECT
 op1f_card_veffchop:
-    .long 0x44524143, 64, 10, 3
+    .long 0x44524143, 64, 10, 4
     .ascii "veffchop"
     .fill 8, 1, 0
     .long veffchop_frame
