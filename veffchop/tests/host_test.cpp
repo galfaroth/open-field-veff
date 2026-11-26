@@ -177,10 +177,10 @@ static void press(int knob, int shift = 0) {
     veffchop_input(&e);
     e.what = OP1F_UP; veffchop_input(&e);
 }
-// v2: a keyboard key reaches the card's input function (13 up from the lowest key, provisional) and is let through
+// v2: a keyboard key reaches the card's input function and is let through; v3: by the unit's numbers
 static void strike(int k) {
-    unsigned rec[4] = { 13u + (unsigned)k, 100u, 0u, 0u };
-    Op1fInput e = {}; e.bytes = sizeof e; e.mine = 1; e.what = OP1F_DOWN; e.key = 13u + (unsigned)k; e.record = rec;
+    unsigned rec[4] = { KEY_NUMBER[k], 100u, 0u, 0u };
+    Op1fInput e = {}; e.bytes = sizeof e; e.mine = 1; e.what = OP1F_DOWN; e.key = KEY_NUMBER[k]; e.record = rec;
     CHECK(veffchop_input(&e) == 0, "keyboard key %d was taken", k);
     e.what = OP1F_UP; e.record = 0;
     CHECK(veffchop_input(&e) == 0, "keyboard key %d's up was taken", k);
@@ -249,7 +249,22 @@ int main(int argc, char** argv) {
         CHECK(veffchop_input(&e) == 0, "shift taken");
         e.key = 53; CHECK(veffchop_input(&e) == 0, "key 53 taken");
         e.what = OP1F_TURN; e.key = 3; e.turn = 0; CHECK(veffchop_input(&e) == 1, "a turn of the fourth knob not taken");
-        CHECK(drum_key_of(13) == 0 && drum_key_of(36) == 23 && drum_key_of(38) == -1 && drum_key_of(12) == -1 && drum_key_of(54) == -1, "drum_key_of");
+        CHECK(drum_key_of(39) == 0 && drum_key_of(13) == 1 && drum_key_of(32) == 8 && drum_key_of(31) == 12 && drum_key_of(53) == 23 &&
+              drum_key_of(38) == -1 && drum_key_of(21) == -1 && drum_key_of(54) == -1, "drum_key_of");
+        int seen[24] = {}, all = 1;
+        for (unsigned n = 0; n < 128; ++n) { const int k = drum_key_of(n); if (k >= 0) ++seen[k]; }
+        for (int k = 0; k < 24; ++k) all &= seen[k] == 1;
+        CHECK(all, "the 24 drum keys are not each one number");
+        // v3: shift seen by its own down and up (the press's flag 0): a turn held goes to the shift set
+        Op1fInput sh = {}; sh.bytes = sizeof sh; sh.mine = 1; sh.what = OP1F_DOWN; sh.key = 38;
+        veffchop_input(&sh);
+        const int gap_before = turned_shift[1];
+        e.what = OP1F_TURN; e.key = 1; e.turn = 1024; e.shift = 0; veffchop_input(&e);
+        CHECK(turned_shift[1] == gap_before + 1024, "a turn with shift held (flag 0) not on the shift set");
+        e.turn = -1024; veffchop_input(&e);
+        sh.what = OP1F_UP; veffchop_input(&sh);
+        CHECK(!shift_held, "shift still held after its up");
+
     }
 
     // ---- waiting, then analysing within the budget
@@ -406,7 +421,12 @@ int main(int argc, char** argv) {
         press(3); frame();
         CHECK(bad_order == 0, "second apply out of order");
         writes_seen = 0;
-        press(3, 1); frame();
+        {   // v3: as on the unit: shift's own down, the knob's press with no shift flag, shift's up
+            Op1fInput sh = {}; sh.bytes = sizeof sh; sh.mine = 1; sh.what = OP1F_DOWN; sh.key = 38; veffchop_input(&sh);
+            press(3, 0);
+            sh.what = OP1F_UP; veffchop_input(&sh);
+        }
+        frame();
         u32 differ = 0;
         for (u32 s = 0; s < 8; ++s) for (u32 i = 0; i < 8 * 24; ++i) if (words_mem[KEY_TABLE + s * KIT_BYTES + i * 4] != before[s][i]) ++differ;
         std::printf("undo: %ld words written, %u words differ from the kit's own\n", writes_seen, differ);

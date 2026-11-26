@@ -31,7 +31,7 @@ op1f_card_veffchop_drum_page:
 .global op1f_card_veffchop
 .type op1f_card_veffchop, STT_OBJECT
 op1f_card_veffchop:
-    .long 0x44524143, 64, 10, 2
+    .long 0x44524143, 64, 10, 3
     .ascii "veffchop"
     .fill 8, 1, 0
     .long veffchop_frame

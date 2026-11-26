@@ -83,6 +83,8 @@ static volatile u32 shown_where, shown_how;
 static volatile u32 struck;                              // (count << 8) | the keyboard key's number, of the last key down
 static volatile int turned[4], turned_shift[4];          // turns, 1024 a step, summed
 static volatile u32 pressed[4], pressed_shift[4];        // presses counted
+static volatile u32 shift_held;                          // v3: shift (key 38) down, seen by its own down and up
+static volatile u32 press4_how;                          // v3: (count << 8) | how the last press of the 4th knob saw shift
 
 // The drum's page is up: shown(OP1F_PLACE_DRUM + slot, OP1F_SHOWN_UP).
 static inline int page_up() {
@@ -99,12 +101,17 @@ enum { KEYBOARD_LO = 13, KEYBOARD_HI = 53, SHIFT_KEY = 38 };
 extern "C" int veffchop_input(const Op1fInput* e) OP1F_NAMED("veffchop_input");
 extern "C" int veffchop_input(const Op1fInput* e) {
     if (e->bytes < 36u || !e->mine || !page_up()) return 0;
+    if (e->what != (u32)OP1F_TURN && e->key == (u32)SHIFT_KEY) {    // v3: shift tracked by its own down and up
+        if (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) shift_held = 1;
+        else if (e->what == (u32)OP1F_UP) shift_held = 0;
+        return 0;                                        // the unit sees it as always
+    }
     if (e->what != (u32)OP1F_TURN && e->key >= (u32)KEYBOARD_LO && e->key <= (u32)KEYBOARD_HI) {
         if (e->key != (u32)SHIFT_KEY && (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT))
             struck = (((struck >> 8) + 1u) << 8) | (e->key & 0xffu);
         return 0;                                        // the kit plays it
     }
-    const int shift = e->shift || e->what == (u32)OP1F_DOWN_SHIFT;
+    const int shift = e->shift || e->what == (u32)OP1F_DOWN_SHIFT || shift_held;
     if (e->what == (u32)OP1F_TURN) {
         if (e->key > 3u) return 0;
         if (shift) turned_shift[e->key] = turned_shift[e->key] + e->turn;
@@ -114,6 +121,8 @@ extern "C" int veffchop_input(const Op1fInput* e) {
     if (e->key >= 54u && e->key <= 57u) {
         if (e->what == (u32)OP1F_UP) return 1;
         if (e->what != (u32)OP1F_DOWN && e->what != (u32)OP1F_DOWN_SHIFT) return 0;
+        if (e->key == 57u)
+            press4_how = (((press4_how >> 8) + 1u) << 8) | (e->shift ? 1u : 0u) | (e->what == (u32)OP1F_DOWN_SHIFT ? 2u : 0u) | (shift_held ? 4u : 0u);
         if (shift) pressed_shift[e->key - 54u] = pressed_shift[e->key - 54u] + 1u;
         else pressed[e->key - 54u] = pressed[e->key - 54u] + 1u;
         return 1;
@@ -121,12 +130,19 @@ extern "C" int veffchop_input(const Op1fInput* e) {
     return 0;
 }
 
-// The drum key (0..23) of a keyboard key's number. NOT CONFIRMED ON A UNIT: the firmware's numbers of the 24 keys are
-// taken to run 13 up from the lowest key, shift (38) skipped; every new number is logged (line 9) to settle it.
+// The drum key (0..23) of a keyboard key's number, as struck on the owner's unit (v2's line 9, the 24 keys from the
+// lowest F to the highest E). The firmware's numbers follow no one range: the white keys of the lower F..B are 39-42,
+// of C..F in the middle 28-31, of the upper G..E 48-53; the black keys 13-15 (F# G# A# low), 32 (C# low), 22 (D# low),
+// 23-27 (F# G# A# C# D# high). -1 for any other number.
+static const u8 KEY_NUMBER[KEYS] = {
+    39, 13, 40, 14, 41, 15, 42,       // F  F# G  G# A  A# B
+    28, 32, 29, 22, 30,               // C  C# D  D# E
+    31, 23, 48, 24, 49, 25, 50,       // F  F# G  G# A  A# B
+    51, 26, 52, 27, 53,               // C  C# D  D# E
+};
 static int drum_key_of(u32 n) {
-    if (n < (u32)KEYBOARD_LO || n > (u32)KEYBOARD_HI || n == (u32)SHIFT_KEY) return -1;
-    const int k = (int)n - KEYBOARD_LO - (n > (u32)SHIFT_KEY ? 1 : 0);
-    return k < KEYS ? k : -1;
+    for (int k = 0; k < KEYS; ++k) if (KEY_NUMBER[k] == n) return k;
+    return -1;
 }
 
 // ---------------------------------------------------------------- the frame function's own
@@ -145,7 +161,7 @@ static struct {
     u32 press_seen[4], press_shift_seen[4];
     u32 note, note_at;                                   // a word on the page for a moment: APPLIED, UNDONE, ...
     u32 struck_seen, struck_key, struck_at, struck_valid, keys_logged[2];
-    u32 shown_where_seen, shown_how_seen;
+    u32 shown_where_seen, shown_how_seen, press4_seen;
     // the kit's own pairs, kept at the first apply to a slot's sample: undo puts them back
     u32 orig_words[SLOTS], orig_valid[SLOTS];
     u32 orig[SLOTS][2 * KEYS];
@@ -468,6 +484,11 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         st.press_seen[i] = p; st.press_shift_seen[i] = ps;
         if (i == 3 && hit && page_up()) apply(now->ms);
         if (i == 3 && hit_s && page_up()) undo(now->ms);
+    }
+    const u32 ph = press4_how;
+    if (ph != st.press4_seen) {
+        st.press4_seen = ph;
+        op1f_log(3, LOG_FILE, 10, "veffchop: 4th knob pressed: shift flag %u, down-shift %u, shift held %u", ph & 1u, (ph >> 1) & 1u, (ph >> 2) & 1u);
     }
     const u32 sk = struck;
     if (sk != st.struck_seen) {
