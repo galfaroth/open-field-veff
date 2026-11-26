@@ -232,7 +232,7 @@ static struct {
     u32 clip_frames, clip_stereo, copy_state, copy_at, copy_from, copy_n;
     u32 paste_state, paste_slot, paste_key, paste_at, paste_n, paste_done, paste_stereo, paste_data, paste_ticket, paste_ms;
     u32 paste_end[SLOTS], paste_obj[SLOTS], paste_words[SLOTS];
-    u32 ed_note, ed_note_at, ed_missing;
+    u32 ed_note, ed_note_at, ed_missing, ed_logged;
 } st;
 static u32 target[2 * KEYS], current[2 * KEYS];
 static Write writes[2 * KEYS];
@@ -439,6 +439,9 @@ static u32 material_end(const Where& w) {
     const u32 cap = capacity_of(w.stereo);
     for (int k = 0; k < KEYS; ++k) ends[k] = frame_of_q31(rd32(w.table + k * KEY_BYTES + 8), cap);
     const u32 pasted = st.paste_obj[w.slot] == w.obj && st.paste_words[w.slot] == w.words ? st.paste_end[w.slot] : 0u;
+    // v10: after a drop (the base's `dropped`, while no sound was loaded since) the material is the cut: the firmware's
+    // words still say the sample loaded before, and the keys' ends still point into it (stale audio a paste may cover)
+    if (dropped_now[w.slot & 7u]) return edit::used(dropped_now[w.slot & 7u], ends, 0u, pasted);
     return edit::used(w.frames, ends, KEYS, pasted);
 }
 
@@ -461,6 +464,7 @@ static void edit_load(const Where& w, u32 key) {
     st.ed_start = frame_of_q31(rd32(w.table + key * KEY_BYTES + 4), cap);
     st.ed_end = frame_of_q31(rd32(w.table + key * KEY_BYTES + 8), cap);
     st.ed_total = material_end(w);
+    if (st.ed_end + 1u > st.ed_total) st.ed_total = st.ed_end + 1u;                // v10: a key past the material is still edited whole
     if (st.ed_total > cap) st.ed_total = cap;
     st.ed_centre = st.ed_start + ((st.ed_end - st.ed_start) >> 1);
     st.zc_span = 0;                                                                 // the zoomed wave read anew
@@ -469,10 +473,9 @@ static void edit_load(const Where& w, u32 key) {
 static void edit_enter(u32 ms) {
     Where w;
     if (st.state != READY || !same_sample(w)) { say_note(N_NOT_READY, ms); return; }
-    if (!st.struck_valid) { ed_say(EN_STRIKE, ms); return; }
     ensure_orig(w);
     st.editing = 1; st.ed_zoom = 0;
-    edit_load(w, st.struck_key);
+    edit_load(w, st.struck_valid ? st.struck_key : 0u);                            // v10: key 1 when none was struck
     op1f_log(3, LOG_FILE, 21, "veffchop: edit on slot %u, key %u: frames %u-%u of %u", w.slot + 1, st.ed_key + 1, st.ed_start, st.ed_end, st.ed_total);
 }
 
@@ -507,9 +510,13 @@ static void edit_knobs() {
     const u32 sp = edit::span(st.ed_total, st.ed_zoom), stp = edit::step(sp, (u32)COLS), most = st.ed_total ? st.ed_total - 1u : 0u;
     int changed = 0;
     for (int i = 0; i < 4; ++i) {
-        const int s = steps_of(turned[i], st.turn_seen[i], st.turn_rest[i]);
-        steps_of(turned_shift[i], st.turn_shift_seen[i], st.turn_shift_rest[i]);   // shift and a turn: nothing in EDIT
+        // v10: a turn with shift (or with shift taken as held) moves the same: EDIT has no shift-turns
+        const int s = steps_of(turned[i], st.turn_seen[i], st.turn_rest[i]) + steps_of(turned_shift[i], st.turn_shift_seen[i], st.turn_shift_rest[i]);
         if (!s) continue;
+        if (st.ed_logged < 64u) {
+            ++st.ed_logged;
+            op1f_log(3, LOG_FILE, 32, "veffchop: edit knob %d by %d (a step %u frames): start %u end %u zoom %u", i + 1, s, stp, st.ed_start, st.ed_end, st.ed_zoom);
+        }
         if (i == 0) { st.ed_start = edit::moved(st.ed_start, s, stp, most); st.ed_moved = 0; st.ed_centre = st.ed_start; changed = 1; }
         else if (i == 1) { st.ed_end = edit::moved(st.ed_end, s, stp, most); st.ed_moved = 1; st.ed_centre = st.ed_end; changed = 1; }
         else if (i == 2) st.ed_zoom = (u32)clampi((int)st.ed_zoom + s, 0, edit::ZOOMS - 1);
@@ -780,7 +787,7 @@ static int put_ms(char* out, int at, u32 frames) {
 
 // v8: the EDIT view: the zoomed wave, the key's start (white) and end (pink), where it plays.
 static void paint_edit(void* c, u32 ms, int shift) {
-    char tag[32], v0[16], v1[16], v2[16], v3[16];
+    char tag[32], v0[32], v1[32], v2[32], v3[32];
     tag[0] = 0;
     if (st.ed_note && ms - st.ed_note_at < (u32)NOTE_MS) {
         if (st.ed_note == EN_MISSING) put(tag, put_ms(tag, put(tag, 0, "NEEDS "), st.ed_missing), " MORE");
@@ -792,11 +799,13 @@ static void paint_edit(void* c, u32 ms, int shift) {
     veffui::Column col[4];
     const u32 sp = edit::span(st.ed_total, st.ed_zoom);
     if (shift) {
-        put(v0, 0, "PRESS"); put(v1, 0, st.clip_frames ? "PRESS" : "-"); put(v2, 0, "PRESS"); put(v3, 0, "PRESS");
-        col[0].label = "COPY"; col[0].value = v0; col[0].frac = 0;
-        col[1].label = "PASTE"; col[1].value = v1; col[1].frac = st.clip_frames ? 1024 : 0;
-        col[2].label = "DONE"; col[2].value = v2; col[2].frac = 0;
-        col[3].label = "UNDO"; col[3].value = v3; col[3].frac = 0;
+        put_num(v0, put(v0, 0, "COPY|KEY "), st.ed_key + 1u);                   // v10: the shift-presses, as hints
+        if (st.clip_frames) put(v1, put_ms(v1, put(v1, 0, "PASTE|"), st.clip_frames), ""); else put(v1, 0, "PASTE|NO COPY YET");
+        put(v2, 0, "LEAVE|EDIT"); put(v3, 0, "UNDO");
+        col[0].label = "SHIFT+PRESS"; col[0].value = v0; col[0].frac = -1;
+        col[1].label = "SHIFT+PRESS"; col[1].value = v1; col[1].frac = -1;
+        col[2].label = "SHIFT+PRESS"; col[2].value = v2; col[2].frac = -1;
+        col[3].label = "SHIFT+PRESS"; col[3].value = v3; col[3].frac = -1;
     } else {
         put_ms(v0, 0, st.ed_start); put_ms(v1, 0, st.ed_end - st.ed_start + 1u); put_ms(v2, 0, sp); put(v3, 0, "SNAP");
         col[0].label = "START"; col[0].value = v0; col[0].frac = st.ed_total ? (int)udiv((st.ed_start >> 6) * 1024u, (st.ed_total >> 6) + 1u) : 0;
@@ -859,17 +868,18 @@ static void paint(void* c, u32 ms, int shift) {
     if (shift && tag[0] == 0) put(tag, 0, "SHIFT");
 
     // the columns
-    char v0[16], v1[16], v2[16], v3[16];
+    char v0[32], v1[32], v2[32], v3[32];
     veffui::Column col[4];
     if (shift) {
         put(v0, put_num(v0, 0, st.p.offset_ms), " MS");
         put(v1, put_num(v1, 0, st.p.gap_ms), " MS");
-        put(v2, 0, "-");
-        put(v3, 0, "PRESS");
+        // v10: the shift-presses said where the slider was: knob 3 EDIT, knob 4 UNDO
+        if (st.struck_valid) put_num(v2, put(v2, 0, "EDIT|KEY "), st.struck_key + 1u); else put(v2, 0, "EDIT THIS|SAMPLE");
+        put(v3, 0, st.orig_valid[st.at.slot & 7] ? "UNDO" : "NOTHING|TO UNDO");
         col[0].label = "OFFSET"; col[0].value = v0; col[0].frac = (int)udiv(st.p.offset_ms * 1024u, 20u);
         col[1].label = "GAP"; col[1].value = v1; col[1].frac = (int)udiv((st.p.gap_ms - 20u) * 1024u, 480u);
-        col[2].label = ""; col[2].value = v2; col[2].frac = 0;
-        col[3].label = "UNDO"; col[3].value = v3; col[3].frac = st.orig_valid[st.at.slot & 7] ? 1024 : 0;
+        col[2].label = "SHIFT+PRESS"; col[2].value = v2; col[2].frac = -1;
+        col[3].label = "SHIFT+PRESS"; col[3].value = v3; col[3].frac = -1;
     } else {
         put(v0, 0, MODE_TEXT[st.p.mode]);
         if (st.p.mode == EQUAL) put_num(v1, 0, st.p.parts);
@@ -1034,6 +1044,7 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         st.shown_where_seen = shown_where; st.shown_how_seen = shown_how;
         op1f_log(3, LOG_FILE, 8, "veffchop: drum engine page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
     }
+    shift_held = now->shift ? 1u : 0u;                   // v10: the base's word of shift, each frame: its up never comes to us
     const u32 mode_before = st.p.mode;
     knobs();
     if (st.armed && st.p.mode != LAZY && mode_before == LAZY) lazy_disarm(now->ms, 1, "another mode");   // v7

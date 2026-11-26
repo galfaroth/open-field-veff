@@ -648,12 +648,23 @@ int main(int argc, char** argv) {
         for (u32 v = 0; v < 8; ++v) { words_mem[VOICE_KEYS + 4 * v] = 30; words_mem[VOICE0 + v * 0x38 + 0x18] = 0; words_mem[VOICE0 + v * 0x38 + 0x2c] = 0; }
         until_ready();
         st.struck_valid = 0;
+        frame(1); picture("page-shift-hints.ppm");                  // v10: the shift-presses said on the page
         press(2, 1); frame();
-        CHECK(!st.editing && st.ed_note == EN_STRIKE, "EDIT without a key struck");
+        CHECK(st.editing && st.ed_key == 0, "EDIT without a key struck: key 1 (%u %u)", st.editing, st.ed_key);
+        frame(1); picture("page-edit-shift-hints.ppm");
+        press(2, 1); frame();
+        CHECK(!st.editing, "left");
         strike(2); frame();
+        frame(1); picture("page-shift-hints-key.ppm");
         press(2, 1); frame();
         CHECK(st.editing && st.ed_key == 2 && st.ed_start == frame_of_q31(rec(4, 2, 4)) && st.ed_end == frame_of_q31(rec(4, 2, 8)),
               "EDIT: key %u %u-%u", st.ed_key, st.ed_start, st.ed_end);
+        // v10: shift's down came to us and its up never does (the unit's): the frame's word of shift lets go of it, and a
+        // turn with shift moves in EDIT too
+        { Op1fInput sh = {}; sh.bytes = 36; sh.mine = 1; sh.what = OP1F_DOWN; sh.key = 38; veffchop_input(&sh); }
+        frame();
+        CHECK(shift_held == 0, "shift still held after a frame without it");
+        { const u32 s0 = st.ed_start; turn(0, 1, 1); frame(); CHECK(st.ed_start != s0, "a turn with shift moved nothing in EDIT"); turn(0, -1, 1); frame(); }
         const u32 s_before = st.ed_start, step0 = edit::step(edit::span(st.ed_total, 0), COLS);
         turn(0, 3); frame();
         CHECK(st.ed_start == s_before + 3 * step0 && rec(4, 2, 4) == q31_of_frame(st.ed_start, 882000u) && bad_order == 0, "START: %u", st.ed_start);
@@ -697,6 +708,19 @@ int main(int argc, char** argv) {
         CHECK(st.paste_at >= pat + cn, "the second paste behind the first: %u", st.paste_at);
         mock_done = 0;
         frame();
+        // v10: after a drop of the base's, the material is the cut (`dropped`), not the words nor the keys' stale ends
+        mock_dropped = 20000; mock_done = 0;
+        st.at.obj = 0; until_ready();                                // seen anew with the dropped length, as after a drop
+        st.paste_end[4] = 0;
+        { Where w; locate(w); CHECK(material_end(w) == 20000, "the material after a drop: %u", material_end(w)); }
+        if (!st.editing) { strike(5); frame(); press(2, 1); frame(); }
+        CHECK(st.editing, "EDIT again after the drop");
+        st.paste_state = 0;                                          // the second paste's keep is not answered here
+        press(1, 1); frame();
+        CHECK(st.paste_state == 1 && st.paste_at == 20064, "a paste after a drop goes behind the cut: %u", st.paste_at);
+        for (int i = 0; i < 400 && st.paste_state == 1; ++i) frame();
+        mock_dropped = 0; st.at.obj = 0; until_ready();
+        if (!st.editing) { strike(5); frame(); press(2, 1); frame(); }
         // too large: a copy that does not fit says how much is missing
         st.clip_frames = 800000; st.paste_state = 0;
         press(1, 1); frame();

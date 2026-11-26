@@ -23,7 +23,7 @@ def main(argv):
     with open(recipe_path, encoding="utf-8") as f:
         recipe = json.load(f)
     faults = []
-    if recipe.get("version") not in (4, 5, 6, 7, 8, 9):
+    if recipe.get("version") not in (4, 5, 6, 7, 8, 9, 10):
         faults.append("the recipe's version is %r, not 4" % recipe.get("version"))
     asks = recipe["card"]["asks"]
     if len(asks) not in (1, 2) or (len(asks) == 2 and asks[1].get("kind") != "memory"):

@@ -226,6 +226,25 @@ static inline void page(void* c, const char* name, int which_icon, const Column 
     for (int i = 0; i < 4; ++i) {
         const int x0 = VEFF_COL_X + i * VEFF_COL_W;
         if (!col[i].label || !*col[i].label) continue;
+        if (col[i].frac < 0) {                                       // veffchop 10: a press hint, centred, no slider
+            // the label small and grey above (a shift-turn's value, or "SHIFT +"); the hint in pink below, one or two
+            // lines (a '|' breaks it), each centred in the column
+            const int w = text_width(col[i].label, 2, 2);
+            text(c, x0 + ((VEFF_COL_W - 14 - w) >> 1), VEFF_LABEL_Y, col[i].label, VEFF_GREY, 2, 2);
+            char line[24];
+            const char* t = col[i].value;
+            int y = VEFF_VALUE_Y + 2, lines = 0;
+            while (*t && lines < 2) {
+                int n = 0;
+                while (*t && *t != '|' && n < 23) line[n++] = *t++;
+                line[n] = 0;
+                if (*t == '|') ++t;
+                const int lw = text_width(line, 2, 2);
+                text(c, x0 + ((VEFF_COL_W - 14 - lw) >> 1), y, line, VEFF_PINK, 2, 2);
+                y += 16; ++lines;
+            }
+            continue;
+        }
         disc(c, x0 + 11, VEFF_LABEL_Y + 3, 3, on ? VEFF_PINK : VEFF_GREY);
         text(c, x0 + 24, VEFF_LABEL_Y, col[i].label, VEFF_WHITE, 2, 2);
         const int room = VEFF_COL_W - 42;   // a value too wide for its column steps down a size
