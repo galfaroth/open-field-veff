@@ -23,6 +23,7 @@
 #include "build_r6e_card.h"
 #include "veff_ui.h"
 #include "veffchop_engine.h"
+#include "lazy_tap.h"
 
 typedef unsigned u32;
 typedef unsigned char u8;
@@ -31,6 +32,7 @@ using namespace chop;
 static const char LOG_FILE[] = "op1f/veffchop.cpp";
 enum { ASK = 0, SLOTS = 8, STEADY_MS = 500, NOTE_MS = 2500,
        OFF_FRAMES = 0xd768, OFF_WORDS = 0xd76c, OFF_STEREO = 0xd770, OBJECT_BYTES = 0xd774, KEY_BYTES = 0x20, KIT_BYTES = 0x300, DATA_PAD = 16 };
+static const u32 VOICE0 = 0x119062d8u, VOICE_KEYS = 0x11903560u;   // v7: the drum voices, and the key index each plays
 static const u32 HOLDERS = 0x0802f0acu, CUR_SLOT = 0x84a01528u, KEY_TABLE = 0x84a03cc8u;
 static const u32 DDR_LO = 0x80000000u, DDR_HI = 0x90000000u, SDRAM_LO = 0x08000000u, SDRAM_HI = 0x08100000u;
 
@@ -97,6 +99,8 @@ static volatile int turned[4], turned_shift[4];          // turns, 1024 a step, 
 static volatile u32 pressed[4], pressed_shift[4];        // presses counted
 static volatile u32 shift_held;                          // v3: shift (key 38) down, seen by its own down and up
 static volatile u32 press4_how;                          // v3: (count << 8) | how the last press of the 4th knob saw shift
+static volatile u32 lazy_armed, lazy_playing;           // v7: written by the frame, read by the input function
+static volatile u32 tapped;                              // v7: taps counted by the input function (keys while armed and playing)
 static volatile u32 drop_down;                           // v6: the place the drop key went down on, 0 none
 static volatile int drop_answer;                         // v6: op1f_sample_drop's answer at the key's up
 static volatile u32 drop_asked;                          // v6: (count << 8) | the place, written after drop_answer
@@ -117,7 +121,7 @@ extern "C" void veffchop_shown(unsigned where, unsigned how) { shown_where = whe
 
 // The keyboard's keys (13 to 53 but shift, 38) are let through so the kit plays them; their number is noted for the
 // highlight. They may come on the audio thread: one word written, nothing else. The knobs and their clicks are taken.
-enum { KEYBOARD_LO = 13, KEYBOARD_HI = 53, SHIFT_KEY = 38 };
+enum { KEYBOARD_LO = 13, KEYBOARD_HI = 53, SHIFT_KEY = 38, LAZY_KEY = 39 };   // v7: 39, the lowest F: drum key 1
 extern "C" int veffchop_input(const Op1fInput* e) OP1F_NAMED("veffchop_input");
 extern "C" int veffchop_input(const Op1fInput* e) {
     if (e->bytes < 36u || !e->mine || !page_up()) return 0;
@@ -125,6 +129,11 @@ extern "C" int veffchop_input(const Op1fInput* e) {
         if (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) shift_held = 1;
         else if (e->what == (u32)OP1F_UP) shift_held = 0;
         return 0;                                        // the unit sees it as always
+    }
+    if (e->what != (u32)OP1F_TURN && e->key >= (u32)KEYBOARD_LO && e->key <= (u32)KEYBOARD_HI && e->key != (u32)LAZY_KEY &&
+        lazy_armed && lazy_playing) {                    // v7: a tap while the lowest key plays the sample: taken, silent
+        if (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT) tapped = tapped + 1u;
+        return 1;
     }
     if (e->what != (u32)OP1F_TURN && e->key >= (u32)KEYBOARD_LO && e->key <= (u32)KEYBOARD_HI) {
         if (e->key != (u32)SHIFT_KEY && (e->what == (u32)OP1F_DOWN || e->what == (u32)OP1F_DOWN_SHIFT))
@@ -199,6 +208,9 @@ static struct {
     u32 orig[SLOTS][2 * KEYS];
     u32 written[SLOTS][2 * KEYS], written_valid[SLOTS];
     u32 applied;
+    // v7: LAZY
+    u32 armed, armed_slot, tapped_seen, play_frame, playing, taps_logged;
+    lazy::Taps taps;
 } st;
 static u32 target[2 * KEYS], current[2 * KEYS];
 static Write writes[2 * KEYS];
@@ -302,6 +314,73 @@ static void undo(u32 ms) {
     op1f_log(3, LOG_FILE, 5, "veffchop: undo on slot %u: the kit's own pairs back, %d words written", s + 1, n);
 }
 
+// ---------------------------------------------------------------- v7: LAZY, the taps
+// ARM: the kit's own pairs kept (as for undo), key 1 made the whole sample, so that the lowest key plays it through.
+static void lazy_arm(u32 ms) {
+    Where w;
+    if (st.state != READY) { say_note(N_NOT_READY, ms); return; }
+    if (!same_sample(w)) { say_note(N_CHANGED, ms); st.state = WAITING; return; }
+    const u32 s = w.slot;
+    read_pairs(w.table, current);
+    int ours = st.orig_valid[s] && st.orig_words[s] == w.words && st.written_valid[s];
+    for (int i = 0; ours && i < 2 * KEYS; ++i) if (current[i] != st.written[s][i]) ours = 0;
+    if (!ours) {
+        for (int i = 0; i < 2 * KEYS; ++i) st.orig[s][i] = current[i];
+        st.orig_words[s] = w.words; st.orig_valid[s] = 1;
+    }
+    for (int i = 0; i < 2 * KEYS; ++i) target[i] = current[i];
+    target[0] = 0;
+    target[1] = q31_of_frame(w.frames - 1u, capacity_of(w.stereo));
+    const int n = write_pairs(w.table, current, target);
+    for (int i = 0; i < 2 * KEYS; ++i) st.written[s][i] = target[i];
+    st.written_valid[s] = 1;
+    st.armed = 1; st.armed_slot = s; st.tapped_seen = tapped; st.playing = 0; st.play_frame = 0;
+    lazy::clear(st.taps); st.dirty = 1;
+    lazy_armed = 1;
+    op1f_log(3, LOG_FILE, 16, "veffchop: lazy armed on slot %u: key 1 plays the whole sample, frames 0-%u (%08x), %d words written; play key 1 and tap",
+             s + 1, w.frames - 1u, target[1], n);
+}
+
+// DISARM: the kit's own pairs back (`restore` 1), or only the state let go (after APPLY, or a changed sample).
+static void lazy_disarm(u32 ms, int restore, const char* why) {
+    if (!st.armed) return;
+    st.armed = 0; lazy_armed = 0; lazy_playing = 0;
+    if (restore) undo(ms);
+    op1f_log(3, LOG_FILE, 17, "veffchop: lazy disarmed on slot %u: %s, %u tap(s)", st.armed_slot + 1, why, st.taps.n);
+}
+
+// While armed, a frame: where the voice on key 1 is, and the taps made since.
+static void lazy_frame() {
+    if (!st.armed) { lazy_playing = 0; return; }
+    u32 keys[lazy::VOICES], states[lazy::VOICES], positions[lazy::VOICES];
+    for (u32 v = 0; v < (u32)lazy::VOICES; ++v) {
+        const u32 at = VOICE0 + v * (u32)lazy::VOICE_BYTES;
+        keys[v] = rd32(VOICE_KEYS + 4u * v);
+        states[v] = rd32(at + (u32)lazy::STATE_AT);
+        positions[v] = rd32(at + (u32)lazy::POS_AT);
+    }
+    const int v = lazy::playing(keys, states, positions, 0u);
+    const u32 was = st.playing;
+    st.playing = v >= 0;
+    if (v >= 0) st.play_frame = lazy::frame_of_position(positions[v]);
+    if (st.playing != was)
+        op1f_log(3, LOG_FILE, 18, "veffchop: lazy: key 1 %s (voice %d, frame %u), %u tap(s)", st.playing ? "plays" : "ended", v, st.play_frame, st.taps.n);
+    lazy_playing = st.playing;
+    const u32 t = tapped;
+    if (t == st.tapped_seen) return;
+    const u32 count = t - st.tapped_seen;
+    st.tapped_seen = t;
+    for (u32 k = 0; k < count && st.playing; ++k) {
+        const u32 f = snap(an, st.play_frame < an.frames ? st.play_frame : an.frames - 1u);
+        const int took = lazy::add(st.taps, f, an.frames, frames_of_ms((u32)lazy::GAP_MS));
+        if (st.taps_logged < 64u) {
+            ++st.taps_logged;
+            op1f_log(3, LOG_FILE, 19, "veffchop: lazy tap at frame %u (heard %u): %s, %u cut(s)", f, st.play_frame, took ? "a cut" : "too close, left out", st.taps.n);
+        }
+        if (took) st.dirty = 1;
+    }
+}
+
 static void refuse(u32 why) {
     st.state = REFUSED;
     if (st.why != why || !st.why_logged) {
@@ -398,6 +477,7 @@ static void paint(void* c, u32 ms, int shift) {
     tag[0] = 0;
     const int ready = st.state == READY;
     if (!page_up()) put(tag, 0, "DRUM ONLY");
+    else if (st.armed) put(tag, 0, st.playing ? "TAP!" : "ARMED: PLAY KEY 1");          // v7
     else if (drop_ticket) put(tag, 0, "DROPPING");                                    // v6
     else if (drop_message && ms - drop_message_at < (u32)NOTE_MS && drop_message == DM_DROPPED) put(tag, 0, "DROPPED");
     else if (drop_message && ms - drop_message_at < (u32)NOTE_MS && drop_reason == OP1F_EMPTY) put(tag, 0, "NOTHING LIFTED");
@@ -407,6 +487,7 @@ static void paint(void* c, u32 ms, int shift) {
     else if (st.state == ANALYSING) put(tag, put_num(tag, put(tag, 0, "ANALYSING "), progress(an)), "%");
     else if (st.state == STEADYING) put(tag, 0, "WAITING");
     else if (st.state == REFUSED) put(tag, 0, WHY_TEXT[st.why]);
+    else if (ready && st.p.mode == LAZY && st.taps.n == 0) put(tag, 0, "PRESS KNOB 1: ARM");
     else if (ready) put(tag, put_num(tag, 0, sl.n), sl.n == 1 ? " SLICE" : " SLICES");
     if (shift && tag[0] == 0) put(tag, 0, "SHIFT");
 
@@ -424,12 +505,15 @@ static void paint(void* c, u32 ms, int shift) {
         col[3].label = "UNDO"; col[3].value = v3; col[3].frac = st.orig_valid[st.at.slot & 7] ? 1024 : 0;
     } else {
         put(v0, 0, MODE_TEXT[st.p.mode]);
-        if (st.p.mode == EQUAL) put_num(v1, 0, st.p.parts); else put_num(v1, 0, st.p.sens);
+        if (st.p.mode == EQUAL) put_num(v1, 0, st.p.parts);
+        else if (st.p.mode == LAZY) put_num(v1, 0, st.taps.n);                      // v7: the taps
+        else put_num(v1, 0, st.p.sens);
         put(v2, 0, MAP_TEXT[st.p.map]);
         put(v3, 0, st.applied && st.written_valid[st.at.slot & 7] ? "AGAIN" : "PRESS");
         col[0].label = "MODE"; col[0].value = v0; col[0].frac = (int)st.p.mode * 512;
-        col[1].label = st.p.mode == EQUAL ? "PARTS" : "SENS"; col[1].value = v1;
-        col[1].frac = st.p.mode == EQUAL ? (int)udiv((st.p.parts - 2u) * 1024u, 22u) : (int)udiv(st.p.sens * 1024u, 100u);
+        col[1].label = st.p.mode == EQUAL ? "PARTS" : st.p.mode == LAZY ? "TAPS" : "SENS"; col[1].value = v1;
+        col[1].frac = st.p.mode == EQUAL ? (int)udiv((st.p.parts - 2u) * 1024u, 22u) : st.p.mode == LAZY ? (int)udiv(st.taps.n * 1024u, 23u) :
+                      (int)udiv(st.p.sens * 1024u, 100u);
         col[2].label = "MAP"; col[2].value = v2; col[2].frac = (int)udiv(st.p.map * 1024u, 3u);
         col[3].label = "APPLY"; col[3].value = v3; col[3].frac = ready ? 1024 : 0;
     }
@@ -483,6 +567,10 @@ static void paint(void* c, u32 ms, int shift) {
         put_num(t, 0, k + 1);
         if (x + 3 >= label_end + 6 || (int)k == struck_slice)          // a number that would touch the one before: left out
             label_end = x + 3 + veffui::text(c, x + 3, WY0 - 9, t, (int)k == struck_slice ? VEFF_PINK : VEFF_WHITE, 2, 1);
+    }
+    if (st.armed && st.playing) {                                                   // v7: where key 1 plays
+        const int x = x_of(st.play_frame);
+        op1f_paint_box(c, x, WY0 - 4, 3, WHALF * 2 + 10, VEFF_PINK);
     }
     // the play marker: the struck slice at 44.1 frames a ms (pitch not counted)
     if (struck_slice >= 0) {
@@ -567,21 +655,37 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         st.shown_where_seen = shown_where; st.shown_how_seen = shown_how;
         op1f_log(3, LOG_FILE, 8, "veffchop: drum engine page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);
     }
+    const u32 mode_before = st.p.mode;
     knobs();
+    if (st.armed && st.p.mode != LAZY && mode_before == LAZY) lazy_disarm(now->ms, 1, "another mode");   // v7
     drop_frame(now->ms);                                 // v6
     const u32 was = st.state;
     watch(now->ms);
+    if (st.armed && (st.state != READY || st.at.slot != st.armed_slot)) lazy_disarm(now->ms, 0, "the sample changed");   // v7
+    lazy_frame();                                        // v7
     if (st.state == READY && was == READY && st.dirty) {    // v2: never in the frame the analysis ends
         st.dirty = 0;
-        slice(an, st.p, sl);
+        if (st.p.mode == LAZY) lazy::slices(st.taps, an.frames, sl);              // v7: LAZY is the taps
+        else slice(an, st.p, sl);
         map(an, sl, st.p.map, key_slice);
     }
     for (int i = 0; i < 4; ++i) {                        // presses: the fourth applies, shift and it undoes
         const u32 p = pressed[i], ps = pressed_shift[i];
         const int hit = p != st.press_seen[i], hit_s = ps != st.press_shift_seen[i];
         st.press_seen[i] = p; st.press_shift_seen[i] = ps;
-        if (i == 3 && hit && page_up()) apply(now->ms);
-        if (i == 3 && hit_s && page_up()) undo(now->ms);
+        if (i == 0 && hit && page_up() && st.p.mode == LAZY) {                     // v7: ARM, and again DISARM
+            if (st.armed) lazy_disarm(now->ms, 1, "knob 1 pressed again");
+            else lazy_arm(now->ms);
+        }
+        if (i == 1 && hit && st.armed) tapped = tapped + 1u;                       // v7: knob 2's press taps too
+        if (i == 3 && hit && page_up()) {
+            apply(now->ms);
+            if (st.armed && st.note == N_APPLIED) lazy_disarm(now->ms, 0, "applied");
+        }
+        if (i == 3 && hit_s && page_up()) {
+            if (st.armed) { lazy::clear(st.taps); st.dirty = 1; op1f_log(3, LOG_FILE, 20, "veffchop: lazy taps cleared"); }   // v7
+            else undo(now->ms);
+        }
     }
     const u32 ph = press4_how;
     if (ph != st.press4_seen) {

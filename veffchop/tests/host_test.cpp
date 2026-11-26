@@ -559,6 +559,54 @@ int main(int argc, char** argv) {
         picture("page-nothing-lifted.ppm");
         mock_dropped = 0; mock_done = 0; mock_drop_answer = 7;
     }
+    // ---- v7: LAZY, the taps (lazy_tap.h): the parts, then the page on a stood-in unit
+    {
+        CHECK(lazy::frame_of_position(0x157ef7ffu) == 176094u && lazy::frame_of_position(0x1196efffu) == 144093u, "position to frame");
+        u32 keys[8] = {4, 0, 0, 3, 0, 0, 0, 0}, states[8] = {1, 0, 2, 1, 0, 0, 0, 0}, pos[8] = {9, 50, 70, 5, 0, 0, 0, 0};
+        CHECK(lazy::playing(keys, states, pos, 0) == 2, "the voice on key 1: %d", lazy::playing(keys, states, pos, 0));
+        CHECK(lazy::playing(keys, states, pos, 7) == -1, "no voice on key 8");
+        lazy::Taps t; lazy::clear(t);
+        CHECK(lazy::add(t, 5000, 100000, 882) && lazy::add(t, 2000, 100000, 882) && !lazy::add(t, 2500, 100000, 882) &&
+              !lazy::add(t, 100, 100000, 882) && !lazy::add(t, 99500, 100000, 882) && t.n == 2 && t.at[0] == 2000 && t.at[1] == 5000, "taps");
+        for (u32 k = 0; k < 40; ++k) lazy::add(t, 10000 + k * 2000, 1000000, 882);
+        CHECK(t.n == 23, "at most 23 cuts: %u", t.n);
+        lazy::Taps u; lazy::clear(u); lazy::add(u, 3000, 9000, 882);
+        Slices z; lazy::slices(u, 9000, z);
+        CHECK(z.n == 2 && z.start[0] == 0 && z.end[0] == 2999 && z.start[1] == 3000 && z.end[1] == 8999, "slices of the taps");
+
+        const u32 F = (u32)sample.size();
+        setup_unit(3, F, 1);
+        for (u32 v = 0; v < 8; ++v) { words_mem[VOICE_KEYS + 4 * v] = 9; words_mem[VOICE0 + v * 0x38 + 0x18] = 0; words_mem[VOICE0 + v * 0x38 + 0x2c] = 0; }
+        until_ready();
+        turn(0, (int)LAZY - (int)st.p.mode);                         // -> LAZY
+        for (int i = 0; i < 3; ++i) frame();
+        CHECK(st.p.mode == LAZY, "not LAZY");
+        press(0); frame();
+        CHECK(st.armed && rec(3, 0, 4) == 0 && rec(3, 0, 8) == q31_of_frame(F - 1, 882000u), "armed: key 1 %08x-%08x", rec(3, 0, 4), rec(3, 0, 8));
+        picture("page-lazy-armed.ppm");
+        Op1fInput e = {}; e.bytes = 36; e.mine = 1; e.what = OP1F_DOWN; e.key = 13;
+        CHECK(veffchop_input(&e) == 0, "a key taken while key 1 does not play");
+        words_mem[VOICE_KEYS + 4 * 5] = 0; words_mem[VOICE0 + 5 * 0x38 + 0x2c] = 1; words_mem[VOICE0 + 5 * 0x38 + 0x18] = 60000u << 11;
+        frame();
+        CHECK(st.playing && st.play_frame == 60000, "key 1's voice not followed: %u %u", st.playing, st.play_frame);
+        CHECK(veffchop_input(&e) == 1, "a tap not taken while key 1 plays");
+        e.key = LAZY_KEY; CHECK(veffchop_input(&e) == 0, "key 1 itself taken"); e.key = 13;
+        frame();
+        words_mem[VOICE0 + 5 * 0x38 + 0x18] = 60300u << 11; veffchop_input(&e); frame();     // too close: left out
+        words_mem[VOICE0 + 5 * 0x38 + 0x18] = 150000u << 11; press(1); frame();              // knob 2 taps too
+        for (int i = 0; i < 3; ++i) frame();
+        CHECK(st.taps.n == 2 && sl.n == 3 && sl.start[1] == st.taps.at[0] && st.taps.at[0] + 2u * WIN >= 60000 && st.taps.at[0] <= 60000 + 2u * WIN,
+              "taps %u slices %u first %u", st.taps.n, sl.n, st.taps.n ? st.taps.at[0] : 0);
+        picture("page-lazy-taps.ppm");
+        press(3); frame();
+        CHECK(!st.armed && st.note == N_APPLIED && rec(3, 0, 4) == q31_of_frame(sl.start[key_slice[0]], 882000u), "applied: armed %u", st.armed);
+        press(3, 1); frame();
+        CHECK(st.note == N_UNDONE, "undo after a lazy apply");
+        press(0); frame(); CHECK(st.armed, "armed again");
+        press(0); frame(); CHECK(!st.armed && st.note == N_UNDONE, "disarmed: the kit's own back");
+        words_mem[VOICE0 + 5 * 0x38 + 0x2c] = 0;
+        turn(0, -1); for (int i = 0; i < 3; ++i) frame();
+    }
     // ---- a long sample (the most a slot holds) within the budget
     {
         max_words = 0;
