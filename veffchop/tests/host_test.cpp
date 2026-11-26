@@ -33,8 +33,18 @@ static std::map<u32, u32> words_mem;                     // single words: CUR_SL
 static std::vector<uint32_t> sample;                     // the stereo frames, at DATA_AT + 16
 static u32 stereo_byte = 1;
 static long wild = 0, writes_seen = 0, bad_order = 0, wrong_place = 0;
+static std::map<u32, u32> pool_mem;                      // v8: words pasted behind the sample
+static long pool_writes = 0, pool_wild = 0;
+void host_pool_wr32(u32 a, u32 v) {
+    ++pool_writes;
+    const u32 material = (u32)sample.size() * (stereo_byte ? 4u : 2u);   // a mono sample's frames are halfwords
+    if ((a & 3u) || a < DATA_AT + 16 + material || a >= DATA_AT + 0x35d540u) { ++pool_wild; return; }
+    pool_mem[a] = v;
+}
 u32 host_rd32(u32 a) {
+    { auto q = pool_mem.find(a); if (q != pool_mem.end()) return q->second; }
     if (a >= DATA_AT + 16 && a < DATA_AT + 16 + sample.size() * 4) return sample[(a - DATA_AT - 16) >> 2];
+    if (a >= DATA_AT && a < DATA_AT + 0x35d540u) { auto p = pool_mem.find(a); return p == pool_mem.end() ? 0u : p->second; }
     auto it = words_mem.find(a);
     if (it == words_mem.end()) { ++wild; return 0; }
     return it->second;
@@ -72,6 +82,12 @@ extern "C" int op1f_sample_get(const Op1fCard*, unsigned place, Op1fSample* out)
     return 0;
 }
 extern "C" int op1f_sample_drop(const Op1fCard*, unsigned, unsigned place) { ++drop_calls; drop_place_seen = place; return mock_drop_answer; }
+// v8: the memory ask (1, the copy) and the drum mark
+static std::vector<short> clip_memory(882000, 0);
+static bool memory_given = true;
+extern "C" void* op1f_memory(const Op1fCard*, unsigned ask) { return ask == 1 && memory_given ? clip_memory.data() : nullptr; }
+static u32 changed_calls = 0, changed_place = 0;
+extern "C" int op1f_sample_changed(const Op1fCard*, unsigned ask, unsigned place) { ++changed_calls; changed_place = place; return ask == 0 ? 9 : OP1F_BAD_NAME; }
 
 // the canvas: drawn at 4x, kept at 2x
 enum { SS = 4, CW = 480 * SS, CH = 224 * SS };
@@ -156,7 +172,7 @@ static std::vector<Hit> beat(u32 bars, u32 first) {
 }
 
 static void setup_unit(u32 slot, u32 frames, u32 stereo) {
-    words_mem.clear();
+    words_mem.clear(); pool_mem.clear();
     words_mem[CUR_SLOT] = slot;
     for (u32 s = 0; s < 8; ++s) words_mem[HOLDERS + s * 4] = s == slot ? HOLDER_AT : 0;
     words_mem[HOLDER_AT] = OBJ_AT;
@@ -606,6 +622,106 @@ int main(int argc, char** argv) {
         press(0); frame(); CHECK(!st.armed && st.note == N_UNDONE, "disarmed: the kit's own back");
         words_mem[VOICE0 + 5 * 0x38 + 0x2c] = 0;
         turn(0, -1); for (int i = 0; i < 3; ++i) frame();
+    }
+    // ---- v8: EDIT, COPY and PASTE (edit_paste.h): the parts, then the page
+    {
+        CHECK(edit::span(882000, 0) == 882000 && edit::span(882000, 1) == 441000 && edit::span(882000, 12) == 220 && edit::span(100, 3) == 100, "spans");
+        CHECK(edit::view_first(1000, 200, 50) == 0 && edit::view_first(1000, 200, 990) == 800 && edit::view_first(1000, 200, 500) == 400, "view");
+        CHECK(edit::step(882000, 228) == 3868 && edit::step(220, 228) == 1, "steps: %u", edit::step(882000, 228));
+        CHECK(edit::moved(100, -5, 30, 1000) == 0 && edit::moved(100, 5, 300, 1000) == 1000 && edit::moved(100, 2, 10, 1000) == 120, "moved");
+        u32 a = 5000, b = 5100; edit::in_order(a, b, 100000, 1); CHECK(a == 5000 && b == 5000 + edit::LEAST_LENGTH, "in order, the end moved: %u %u", a, b);
+        a = 5000; b = 5100; edit::in_order(a, b, 100000, 0); CHECK(b == 5100 && a == 5100 - edit::LEAST_LENGTH, "in order, the start moved: %u %u", a, b);
+        u32 at = 0, missing = 0;
+        CHECK(edit::place(800000, 90000, 1, at, missing) == 0 && missing == 800064 + 90000 - 881996, "stereo over: missing %u", missing);
+        CHECK(edit::place(800000, 80000, 1, at, missing) == 1 && at == 800064, "stereo fits at %u", at);
+        CHECK(edit::place(500001, 29000, 0, at, missing) == 1 && at == 500066 && !(at & 1), "mono at an even frame %u", at);
+        CHECK(edit::place(500000, 40000, 0, at, missing) == 0 && missing == 500064 + 40000 - 529200, "mono over: missing %u", missing);
+        u32 ends[3] = {100, 9000, 400};
+        CHECK(edit::used(5000, ends, 3, 0) == 9001 && edit::used(5000, ends, 3, 12000) == 12000 && edit::used(20000, ends, 3, 0) == 20000, "used");
+        short in[2] = {1000, -3000}, out[2] = {0, 0};
+        edit::convert(in, 1, 0, out); CHECK(out[0] == -1000, "stereo to mono: %d", out[0]);
+        edit::convert(in, 0, 1, out); CHECK(out[0] == 1000 && out[1] == 1000, "mono to stereo");
+        CHECK(edit::clip_room(1) == 441000 && edit::clip_room(0) == 882000, "the copy's room");
+
+        const u32 F = (u32)sample.size();
+        setup_unit(4, F, 1);
+        for (u32 v = 0; v < 8; ++v) { words_mem[VOICE_KEYS + 4 * v] = 30; words_mem[VOICE0 + v * 0x38 + 0x18] = 0; words_mem[VOICE0 + v * 0x38 + 0x2c] = 0; }
+        until_ready();
+        st.struck_valid = 0;
+        press(2, 1); frame();
+        CHECK(!st.editing && st.ed_note == EN_STRIKE, "EDIT without a key struck");
+        strike(2); frame();
+        press(2, 1); frame();
+        CHECK(st.editing && st.ed_key == 2 && st.ed_start == frame_of_q31(rec(4, 2, 4)) && st.ed_end == frame_of_q31(rec(4, 2, 8)),
+              "EDIT: key %u %u-%u", st.ed_key, st.ed_start, st.ed_end);
+        const u32 s_before = st.ed_start, step0 = edit::step(edit::span(st.ed_total, 0), COLS);
+        turn(0, 3); frame();
+        CHECK(st.ed_start == s_before + 3 * step0 && rec(4, 2, 4) == q31_of_frame(st.ed_start, 882000u) && bad_order == 0, "START: %u", st.ed_start);
+        turn(2, 6); max_words = 0;
+        for (int i = 0; i < 12; ++i) frame();
+        CHECK(st.ed_zoom == 6 && st.zc_next == COLS && st.zc_span == edit::span(st.ed_total, 6) && max_words <= (u32)BUDGET, "ZOOM: %u %u %u words %u", st.ed_zoom, st.zc_next, st.zc_span, max_words);
+        turn(1, -2); frame();
+        CHECK(rec(4, 2, 8) == q31_of_frame(st.ed_end, 882000u), "END written");
+        const u32 len = st.ed_end - st.ed_start;
+        turn(3, 4); frame();
+        CHECK(st.ed_end - st.ed_start == len && rec(4, 2, 4) == q31_of_frame(st.ed_start, 882000u), "NUDGE keeps the length");
+        press(3); frame();
+        CHECK(bad_order == 0 && wrong_place == 0, "SNAP");
+        words_mem[VOICE_KEYS + 4 * 3] = 2; words_mem[VOICE0 + 3 * 0x38 + 0x2c] = 1; words_mem[VOICE0 + 3 * 0x38 + 0x18] = (st.ed_start + 10) << 11;
+        frame();
+        CHECK(st.ed_playing && st.ed_play_frame == st.ed_start + 10, "the key's play line");
+        words_mem[VOICE0 + 3 * 0x38 + 0x2c] = 0;
+        picture("page-edit.ppm");
+        // COPY key 3, then PASTE onto key 6
+        const u32 c0 = st.ed_start, cn = st.ed_end - st.ed_start + 1;
+        press(0, 1);
+        for (int i = 0; i < 40 && (st.copy_state || !st.clip_frames); ++i) frame();
+        CHECK(st.clip_frames == cn && st.clip_stereo == 1 && clip_memory[0] == (short)(sample[c0] & 0xffff) && clip_memory[2 * cn - 1] == (short)(sample[c0 + cn - 1] >> 16),
+              "COPY: %u frames", st.clip_frames);
+        strike(5); frame();
+        CHECK(st.ed_key == 5, "another key struck while editing: %u", st.ed_key);
+        u32 kends[KEYS]; for (int k = 0; k < KEYS; ++k) kends[k] = frame_of_q31(rec(4, (u32)k, 8));
+        const u32 used_want = edit::used(F, kends, KEYS, 0);
+        press(1, 1); frame();
+        for (int i = 0; i < 400 && st.paste_state == 1; ++i) frame();
+        CHECK(st.paste_state == 2 && changed_calls == 1 && changed_place == (u32)OP1F_PLACE_DRUM + 4u && pool_wild == 0, "PASTE: state %u calls %u wild %ld", st.paste_state, changed_calls, pool_wild);
+        u32 pat = 0, pmiss = 0; edit::place(used_want, cn, 1, pat, pmiss);
+        CHECK(st.paste_at == pat && rec(4, 5, 4) == q31_of_frame(pat, 882000u) && pool_mem[DATA_AT + 16 + pat * 4] == sample[c0] &&
+              pool_mem[DATA_AT + 16 + (pat + cn - 1) * 4] == sample[c0 + cn - 1], "the pasted frames and key 6's start (at %u)", st.paste_at);
+        mock_done = 9; mock_answer = 0; frame();
+        CHECK(st.paste_state == 0 && st.ed_note == EN_KEPT, "kept: note %u", st.ed_note);
+        picture("page-pasted.ppm");
+        // a second paste goes behind the first
+        press(1, 1); frame();
+        for (int i = 0; i < 400 && st.paste_state == 1; ++i) frame();
+        CHECK(st.paste_at >= pat + cn, "the second paste behind the first: %u", st.paste_at);
+        mock_done = 0;
+        frame();
+        // too large: a copy that does not fit says how much is missing
+        st.clip_frames = 800000; st.paste_state = 0;
+        press(1, 1); frame();
+        CHECK(st.ed_note == EN_MISSING && st.ed_missing > 0, "too large: note %u missing %u", st.ed_note, st.ed_missing);
+        picture("page-paste-missing.ppm");
+        // stereo copy into a mono slot: averaged, two frames a word
+        st.clip_frames = 4; clip_memory[0] = 100; clip_memory[1] = 300; clip_memory[2] = -50; clip_memory[3] = -150;
+        clip_memory[4] = 7; clip_memory[5] = 9; clip_memory[6] = 1; clip_memory[7] = 1; st.clip_stereo = 1;
+        press(3, 1); frame();                                       // UNDO leaves EDIT
+        CHECK(!st.editing && st.note == N_UNDONE, "UNDO from EDIT");
+        setup_unit(6, F, 0);
+        for (u32 v = 0; v < 8; ++v) { words_mem[VOICE_KEYS + 4 * v] = 30; words_mem[VOICE0 + v * 0x38 + 0x18] = 0; words_mem[VOICE0 + v * 0x38 + 0x2c] = 0; }
+        until_ready();
+        strike(0); frame(); press(2, 1); frame();
+        CHECK(st.editing && st.ed_stereo == 0, "EDIT on a mono slot");
+        const u32 c_before = changed_calls;
+        press(1, 1); frame();
+        for (int i = 0; i < 20 && st.paste_state == 1; ++i) frame();
+        const u32 w0 = pool_mem[DATA_AT + 16 + st.paste_at * 2], w1 = pool_mem[DATA_AT + 16 + st.paste_at * 2 + 4];
+        CHECK(changed_calls == c_before + 1 && (short)(w0 & 0xffff) == 200 && (short)(w0 >> 16) == -100 && (short)(w1 & 0xffff) == 8 && (short)(w1 >> 16) == 1,
+              "stereo into mono: %08x %08x", w0, w1);
+        CHECK(rec(6, 0, 4) == q31_of_frame(st.paste_at, 529200u), "the mono key's start against 529200");
+        press(2, 1); frame();
+        CHECK(!st.editing, "shift and knob 3 leaves EDIT");
+        mock_done = 0;
     }
     // ---- a long sample (the most a slot holds) within the budget
     {

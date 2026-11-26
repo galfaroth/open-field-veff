@@ -24,6 +24,7 @@
 #include "veff_ui.h"
 #include "veffchop_engine.h"
 #include "lazy_tap.h"
+#include "edit_paste.h"
 
 typedef unsigned u32;
 typedef unsigned char u8;
@@ -50,6 +51,12 @@ static inline void wr32(u32 a, u32 v) { host_wr32(a, v); }
 static inline u32 rd32(u32 a) { return *(const volatile u32*)a; }
 static inline u32 rd8(u32 a) { return *(const volatile u8*)a; }
 static inline void wr32(u32 a, u32 v) { *(volatile u32*)a = v; }
+#endif
+#ifdef VEFFCHOP_HOST
+void host_pool_wr32(u32 a, u32 v);
+static inline void pool_wr32(u32 a, u32 v) { host_pool_wr32(a, v); }
+#else
+static inline void pool_wr32(u32 a, u32 v) { *(volatile u32*)a = v; }   // v8: a word of the slot's pool, behind its material
 #endif
 static inline int in(u32 a, u32 bytes, u32 lo, u32 hi) { return !(a & 3) && a >= lo && a < hi && bytes <= hi - a; }
 static u32 words_read;                                   // sample words read this frame (the budget, for the tests)
@@ -211,6 +218,15 @@ static struct {
     // v7: LAZY
     u32 armed, armed_slot, tapped_seen, play_frame, playing, taps_logged;
     lazy::Taps taps;
+    // v8: EDIT of one key, and COPY/PASTE
+    u32 editing, ed_slot, ed_key, ed_start, ed_end, ed_zoom, ed_centre, ed_total, ed_stereo, ed_data, ed_moved;
+    u32 zc_first, zc_span, zc_next, zc_slot;               // the zoomed wave's span and the next column to read
+    u16 zc[COLS];
+    u32 ed_playing, ed_play_frame;
+    u32 clip_frames, clip_stereo, copy_state, copy_at, copy_from, copy_n;
+    u32 paste_state, paste_slot, paste_key, paste_at, paste_n, paste_done, paste_stereo, paste_data, paste_ticket, paste_ms;
+    u32 paste_end[SLOTS], paste_obj[SLOTS], paste_words[SLOTS];
+    u32 ed_note, ed_note_at, ed_missing;
 } st;
 static u32 target[2 * KEYS], current[2 * KEYS];
 static Write writes[2 * KEYS];
@@ -236,7 +252,9 @@ static int steps_of(volatile int& total, int& seen, int& rest) {
     return s;
 }
 
+static void edit_knobs();
 static void knobs() {
+    if (st.editing) { edit_knobs(); return; }                                       // v8
     for (int i = 0; i < 4; ++i) {
         const int s = steps_of(turned[i], st.turn_seen[i], st.turn_rest[i]);
         const int ss = steps_of(turned_shift[i], st.turn_shift_seen[i], st.turn_shift_rest[i]);
@@ -381,6 +399,279 @@ static void lazy_frame() {
     }
 }
 
+// ---------------------------------------------------------------- v8: EDIT one key; COPY and PASTE its sound
+enum { CLIP_ASK = 1, SNAP_REACH = 512, READS_PER_COL = 32, PASTE_BUDGET = 4096 };
+enum { EN_NONE = 0, EN_STRIKE = 1, EN_COPIED = 2, EN_NO_MEMORY = 3, EN_COPY_LONG = 4, EN_NOTHING_COPIED = 5, EN_MISSING = 6,
+       EN_PASTED = 7, EN_KEPT = 8, EN_NOT_KEPT = 9, EN_BUSY = 10 };
+static const char* const ED_NOTE_TEXT[] = { "", "STRIKE A KEY FIRST", "COPIED", "NO MEMORY FOR A COPY", "TOO LONG TO COPY", "NOTHING COPIED",
+                                            "", "PASTED", "PASTED AND KEPT", "PASTED, NOT KEPT", "BUSY" };
+static void ed_say(u32 n, u32 ms) { st.ed_note = n; st.ed_note_at = ms | 1u; }
+
+static u32 read_l16(u32 data, u32 f, u32 stereo, u32 ch) {   // one channel of frame f, as an unsigned halfword
+    const u32 a = data + (u32)DATA_PAD + (stereo ? f * 4u + ch * 2u : f * 2u);
+    const u32 w = rd32(a & ~3u);
+    return (a & 2u) ? w >> 16 : w & 0xffffu;
+}
+
+// The kit's own pairs kept for undo, as at an apply, and the table's words taken as ours from here.
+static void ensure_orig(const Where& w) {
+    const u32 s = w.slot;
+    read_pairs(w.table, current);
+    int ours = st.orig_valid[s] && st.orig_words[s] == w.words && st.written_valid[s];
+    for (int i = 0; ours && i < 2 * KEYS; ++i) if (current[i] != st.written[s][i]) ours = 0;
+    if (!ours) {
+        for (int i = 0; i < 2 * KEYS; ++i) st.orig[s][i] = current[i];
+        st.orig_words[s] = w.words; st.orig_valid[s] = 1;
+    }
+    for (int i = 0; i < 2 * KEYS; ++i) st.written[s][i] = current[i];
+    st.written_valid[s] = 1;
+}
+
+// The end of the slot's material (edit_paste.h's `used`): its own length, the furthest key's end, our own paste.
+static u32 material_end(const Where& w) {
+    u32 ends[KEYS];
+    const u32 cap = capacity_of(w.stereo);
+    for (int k = 0; k < KEYS; ++k) ends[k] = frame_of_q31(rd32(w.table + k * KEY_BYTES + 8), cap);
+    const u32 pasted = st.paste_obj[w.slot] == w.obj && st.paste_words[w.slot] == w.words ? st.paste_end[w.slot] : 0u;
+    return edit::used(w.frames, ends, KEYS, pasted);
+}
+
+// One key's start and end written now: the two words in the order that keeps the pair in order.
+static void write_key(const Where& w, u32 key, u32 start, u32 end) {
+    const u32 cap = capacity_of(w.stereo);
+    read_pairs(w.table, current);
+    for (int i = 0; i < 2 * KEYS; ++i) target[i] = current[i];
+    target[2 * key] = q31_of_frame(start, cap);
+    target[2 * key + 1] = q31_of_frame(end, cap);
+    if (target[2 * key + 1] < target[2 * key] + (u32)MIN_Q) target[2 * key + 1] = target[2 * key] + (u32)MIN_Q;
+    write_pairs(w.table, current, target);
+    for (int i = 0; i < 2 * KEYS; ++i) st.written[w.slot][i] = target[i];
+    st.written_valid[w.slot] = 1;
+}
+
+static void edit_load(const Where& w, u32 key) {
+    const u32 cap = capacity_of(w.stereo);
+    st.ed_slot = w.slot; st.ed_key = key; st.ed_stereo = w.stereo; st.ed_data = w.data;
+    st.ed_start = frame_of_q31(rd32(w.table + key * KEY_BYTES + 4), cap);
+    st.ed_end = frame_of_q31(rd32(w.table + key * KEY_BYTES + 8), cap);
+    st.ed_total = material_end(w);
+    if (st.ed_total > cap) st.ed_total = cap;
+    st.ed_centre = st.ed_start + ((st.ed_end - st.ed_start) >> 1);
+    st.zc_span = 0;                                                                 // the zoomed wave read anew
+}
+
+static void edit_enter(u32 ms) {
+    Where w;
+    if (st.state != READY || !same_sample(w)) { say_note(N_NOT_READY, ms); return; }
+    if (!st.struck_valid) { ed_say(EN_STRIKE, ms); return; }
+    ensure_orig(w);
+    st.editing = 1; st.ed_zoom = 0;
+    edit_load(w, st.struck_key);
+    op1f_log(3, LOG_FILE, 21, "veffchop: edit on slot %u, key %u: frames %u-%u of %u", w.slot + 1, st.ed_key + 1, st.ed_start, st.ed_end, st.ed_total);
+}
+
+static void edit_leave(const char* why) {
+    if (!st.editing) return;
+    st.editing = 0;
+    op1f_log(3, LOG_FILE, 22, "veffchop: edit left: %s; key %u frames %u-%u", why, st.ed_key + 1, st.ed_start, st.ed_end);
+}
+
+// The nearest zero crossing of the sum around frame f, within SNAP_REACH frames; f when none.
+static u32 snap_zero(u32 f) {
+    const u32 lo = f > (u32)SNAP_REACH ? f - (u32)SNAP_REACH : 1u, hi = f + (u32)SNAP_REACH < st.ed_total ? f + (u32)SNAP_REACH : st.ed_total - 1u;
+    u32 best = f, dist = 0xffffffffu;
+    int prev = 0;
+    for (u32 g = lo - 1u; g <= hi; ++g) {
+        const int l = (short)read_l16(st.ed_data, g, st.ed_stereo, 0), r = st.ed_stereo ? (short)read_l16(st.ed_data, g, 1, 1) : l;
+        const int sgn = l + r >= 0 ? 1 : -1;
+        if (g >= lo && sgn != prev) { const u32 d = g > f ? g - f : f - g; if (d < dist) { dist = d; best = g; } }
+        prev = sgn;
+    }
+    return best;
+}
+
+static void edit_write(u32 ms) {
+    Where w;
+    if (!same_sample(w) || w.slot != st.ed_slot) { edit_leave("the sample changed"); say_note(N_CHANGED, ms); return; }
+    edit::in_order(st.ed_start, st.ed_end, st.ed_total ? st.ed_total - 1u : 0u, (int)st.ed_moved);
+    write_key(w, st.ed_key, st.ed_start, st.ed_end);
+}
+
+static void edit_knobs() {
+    const u32 sp = edit::span(st.ed_total, st.ed_zoom), stp = edit::step(sp, (u32)COLS), most = st.ed_total ? st.ed_total - 1u : 0u;
+    int changed = 0;
+    for (int i = 0; i < 4; ++i) {
+        const int s = steps_of(turned[i], st.turn_seen[i], st.turn_rest[i]);
+        steps_of(turned_shift[i], st.turn_shift_seen[i], st.turn_shift_rest[i]);   // shift and a turn: nothing in EDIT
+        if (!s) continue;
+        if (i == 0) { st.ed_start = edit::moved(st.ed_start, s, stp, most); st.ed_moved = 0; st.ed_centre = st.ed_start; changed = 1; }
+        else if (i == 1) { st.ed_end = edit::moved(st.ed_end, s, stp, most); st.ed_moved = 1; st.ed_centre = st.ed_end; changed = 1; }
+        else if (i == 2) st.ed_zoom = (u32)clampi((int)st.ed_zoom + s, 0, edit::ZOOMS - 1);
+        else {
+            const u32 len = st.ed_end - st.ed_start;
+            const u32 ns = edit::moved(st.ed_start, s, stp, most > len ? most - len : 0u);
+            st.ed_start = ns; st.ed_end = ns + len; st.ed_moved = 0;
+            st.ed_centre = ns; changed = 1;
+        }
+    }
+    if (changed) edit_write(0);
+}
+
+static void edit_snap() {
+    st.ed_start = snap_zero(st.ed_start);
+    st.ed_end = snap_zero(st.ed_end);
+    st.ed_moved = 1;
+    edit_write(0);
+    op1f_log(3, LOG_FILE, 23, "veffchop: key %u snapped to zero crossings: frames %u-%u", st.ed_key + 1, st.ed_start, st.ed_end);
+}
+
+// The zoomed wave, a few columns a frame within the budget of words.
+static void zoom_step() {
+    const u32 sp = edit::span(st.ed_total, st.ed_zoom);
+    const u32 first = edit::view_first(st.ed_total, sp, st.ed_centre);
+    if (sp != st.zc_span || first != st.zc_first || st.zc_slot != st.ed_slot) {
+        st.zc_span = sp; st.zc_first = first; st.zc_slot = st.ed_slot; st.zc_next = 0;
+        for (int i = 0; i < COLS; ++i) st.zc[i] = 0;
+    }
+    u32 budget = (u32)BUDGET;
+    const u32 per = udiv(sp << 4, (u32)COLS);                                       // frames a column, 4 bits behind the point
+    while (st.zc_next < (u32)COLS && budget >= (u32)READS_PER_COL) {
+        const u32 c = st.zc_next++;
+        const u32 a = first + ((c * per) >> 4), z = first + (((c + 1u) * per) >> 4);
+        u32 stride = 1;
+        while (stride * (u32)READS_PER_COL < z - a) stride <<= 1;
+        u32 pk = 0;
+        for (u32 f = a; f < z && f < st.ed_total; f += stride) {
+            const int v = (short)read_l16(st.ed_data, f, st.ed_stereo, 0);
+            const u32 m = (u32)(v < 0 ? -v : v);
+            if (m > pk) pk = m;
+            --budget;
+        }
+        st.zc[c] = (u16)pk;
+    }
+}
+
+// COPY: the selected key's frames into the pack's memory, a budget a frame.
+static void copy_begin(u32 ms) {
+    short* clip = (short*)op1f_memory(&op1f_card_veffchop, (unsigned)CLIP_ASK);
+    if (!clip) { ed_say(EN_NO_MEMORY, ms); return; }
+    const u32 n = st.ed_end - st.ed_start + 1u;
+    if (n > edit::clip_room(st.ed_stereo)) {
+        ed_say(EN_COPY_LONG, ms);
+        op1f_log(2, LOG_FILE, 24, "veffchop: copy refused: key %u holds %u frames, the copy %u at most", st.ed_key + 1, n, edit::clip_room(st.ed_stereo));
+        return;
+    }
+    st.copy_state = 1; st.copy_at = 0; st.copy_from = st.ed_start; st.copy_n = n; st.clip_frames = 0; st.clip_stereo = st.ed_stereo;
+}
+
+static void copy_step(u32 ms) {
+    if (!st.copy_state) return;
+    short* clip = (short*)op1f_memory(&op1f_card_veffchop, (unsigned)CLIP_ASK);
+    const u32 ch = st.clip_stereo ? 2u : 1u;
+    u32 k = 0;
+    for (; k < (u32)PASTE_BUDGET && st.copy_at < st.copy_n; ++k, ++st.copy_at) {
+        const u32 f = st.copy_from + st.copy_at;
+        clip[st.copy_at * ch] = (short)read_l16(st.ed_data, f, st.clip_stereo, 0);
+        if (ch == 2u) clip[st.copy_at * 2u + 1u] = (short)read_l16(st.ed_data, f, 1, 1);
+    }
+    if (st.copy_at >= st.copy_n) {
+        st.copy_state = 0; st.clip_frames = st.copy_n;
+        ed_say(EN_COPIED, ms);
+        op1f_log(3, LOG_FILE, 25, "veffchop: copied key %u of slot %u: %u frames, %s", st.ed_key + 1, st.ed_slot + 1, st.clip_frames, st.clip_stereo ? "stereo" : "mono");
+    }
+}
+
+// PASTE: the copy behind the slot's material, a budget a frame; then the key set to it, last; then the unit asked to
+// keep the sample (op1f_sample_changed).
+static void paste_begin(u32 ms) {
+    Where w;
+    if (!st.clip_frames || st.copy_state) { ed_say(EN_NOTHING_COPIED, ms); return; }
+    if (st.paste_state) { ed_say(EN_BUSY, ms); return; }
+    if (!same_sample(w) || w.slot != st.ed_slot) { say_note(N_CHANGED, ms); return; }
+    const u32 used = material_end(w);
+    u32 at = 0, missing = 0;
+    if (!edit::place(used, st.clip_frames, w.stereo, at, missing)) {
+        st.ed_missing = missing; ed_say(EN_MISSING, ms);
+        op1f_log(2, LOG_FILE, 26, "veffchop: paste refused on slot %u key %u: %u frames from frame %u, %u frames (%u ms) more than the slot holds",
+                 w.slot + 1, st.ed_key + 1, st.clip_frames, used, missing, udiv(missing, 44u));
+        return;
+    }
+    st.paste_state = 1; st.paste_slot = w.slot; st.paste_key = st.ed_key; st.paste_at = at; st.paste_n = st.clip_frames;
+    st.paste_done = 0; st.paste_stereo = w.stereo; st.paste_data = w.data; st.paste_ms = ms;
+    op1f_log(3, LOG_FILE, 27, "veffchop: paste onto slot %u key %u: %u frames (%s into %s) at frame %u, behind the material's end %u",
+             w.slot + 1, st.ed_key + 1, st.paste_n, st.clip_stereo ? "stereo" : "mono", w.stereo ? "stereo" : "mono", at, used);
+}
+
+static void paste_step(u32 ms) {
+    if (st.paste_state == 1) {
+        const short* clip = (const short*)op1f_memory(&op1f_card_veffchop, (unsigned)CLIP_ASK);
+        const u32 base = st.paste_data + (u32)DATA_PAD;
+        u32 k = 0;
+        while (k < (u32)PASTE_BUDGET && st.paste_done < st.paste_n) {
+            short in[2], out[2] = {0, 0}, out2[2] = {0, 0};
+            const u32 i = st.paste_done;
+            in[0] = clip[i * (st.clip_stereo ? 2u : 1u)]; in[1] = st.clip_stereo ? clip[i * 2u + 1u] : in[0];
+            edit::convert(in, st.clip_stereo, st.paste_stereo, out);
+            if (st.paste_stereo) {
+                pool_wr32(base + (st.paste_at + i) * 4u, (u32)(unsigned short)out[0] | ((u32)(unsigned short)out[1] << 16));
+                ++st.paste_done;
+            } else {                                                                // two mono frames a word (at is even)
+                out2[0] = 0;
+                if (i + 1u < st.paste_n) {
+                    in[0] = clip[(i + 1u) * (st.clip_stereo ? 2u : 1u)]; in[1] = st.clip_stereo ? clip[(i + 1u) * 2u + 1u] : in[0];
+                    edit::convert(in, st.clip_stereo, 0, out2);
+                }
+                pool_wr32(base + (st.paste_at + i) * 2u, (u32)(unsigned short)out[0] | ((u32)(unsigned short)out2[0] << 16));
+                st.paste_done += 2u;
+            }
+            k += 1u;
+        }
+        if (st.paste_done < st.paste_n) return;
+        Where w;
+        if (!same_sample(w) || w.slot != st.paste_slot) {                          // the kit changed under us: no key is set
+            st.paste_state = 0; say_note(N_CHANGED, ms);
+            op1f_log(2, LOG_FILE, 28, "veffchop: paste on slot %u not finished: the sample changed", st.paste_slot + 1);
+            return;
+        }
+        ensure_orig(w);
+        u32 s0 = st.paste_at, e0 = st.paste_at + st.paste_n - 1u;
+        write_key(w, st.paste_key, s0, e0);                                         // the key last: nothing played the frames before
+        st.paste_end[w.slot] = st.paste_at + st.paste_n; st.paste_obj[w.slot] = w.obj; st.paste_words[w.slot] = w.words;
+        if (st.editing && st.ed_key == st.paste_key && st.ed_slot == w.slot) { edit_load(w, st.paste_key); }
+        const int t = op1f_sample_changed(&op1f_card_veffchop, (unsigned)ASK, (u32)OP1F_PLACE_DRUM + w.slot);
+        op1f_log(3, LOG_FILE, 29, "veffchop: pasted onto slot %u key %u: frames %u-%u, after %u ms; the unit asked to keep it: %d",
+                 w.slot + 1, st.paste_key + 1, s0, e0, ms - st.paste_ms, t);
+        if (t > 0) { st.paste_ticket = (u32)t; st.paste_state = 2; ed_say(EN_PASTED, ms); }
+        else { st.paste_state = 0; ed_say(EN_NOT_KEPT, ms); }
+        return;
+    }
+    if (st.paste_state == 2) {
+        Op1fSample got;
+        if (op1f_sample_get(&op1f_card_veffchop, (u32)OP1F_PLACE_DRUM + st.paste_slot, &got) != 0 || got.done != st.paste_ticket) {
+            if (ms - st.paste_ms > 15000u) { st.paste_state = 0; ed_say(EN_NOT_KEPT, ms); op1f_log(2, LOG_FILE, 30, "veffchop: keep %u: no answer", st.paste_ticket); }
+            return;
+        }
+        st.paste_state = 0;
+        ed_say(got.answer >= 0 ? EN_KEPT : EN_NOT_KEPT, ms);
+        op1f_log(3, LOG_FILE, 30, "veffchop: keep %u of slot %u: answer %d", st.paste_ticket, st.paste_slot + 1, got.answer);
+    }
+}
+
+static void edit_frame(u32 ms) {
+    copy_step(ms);
+    paste_step(ms);
+    if (!st.editing) return;
+    zoom_step();
+    u32 keys[lazy::VOICES], states[lazy::VOICES], positions[lazy::VOICES];
+    for (u32 v = 0; v < (u32)lazy::VOICES; ++v) {
+        const u32 at = VOICE0 + v * (u32)lazy::VOICE_BYTES;
+        keys[v] = rd32(VOICE_KEYS + 4u * v); states[v] = rd32(at + (u32)lazy::STATE_AT); positions[v] = rd32(at + (u32)lazy::POS_AT);
+    }
+    const int v = lazy::playing(keys, states, positions, st.ed_key);
+    st.ed_playing = v >= 0;
+    if (v >= 0) st.ed_play_frame = lazy::frame_of_position(positions[v]);
+}
+
 static void refuse(u32 why) {
     st.state = REFUSED;
     if (st.why != why || !st.why_logged) {
@@ -471,8 +762,78 @@ static int x_of(u32 f) {
     return WX + (int)((f * scale) >> 20);
 }
 
+// v8: a length in frames as milliseconds, with a tenth (44.1 frames a ms)
+static int put_ms(char* out, int at, u32 frames) {
+    const u32 tenths = udiv(frames * 10u + 22u, 44u);
+    const u32 ms = udiv(tenths, 10u);
+    at = put_num(out, at, ms);
+    at = put(out, at, ".");
+    at = put_num(out, at, tenths - ms * 10u);
+    return put(out, at, " MS");
+}
+
+// v8: the EDIT view: the zoomed wave, the key's start (white) and end (pink), where it plays.
+static void paint_edit(void* c, u32 ms, int shift) {
+    char tag[32], v0[16], v1[16], v2[16], v3[16];
+    tag[0] = 0;
+    if (st.ed_note && ms - st.ed_note_at < (u32)NOTE_MS) {
+        if (st.ed_note == EN_MISSING) put(tag, put_ms(tag, put(tag, 0, "NEEDS "), st.ed_missing), " MORE");
+        else put(tag, 0, ED_NOTE_TEXT[st.ed_note]);
+    } else if (st.copy_state) put(tag, 0, "COPYING");
+    else if (st.paste_state == 1) put(tag, 0, "PASTING");
+    else if (st.paste_state == 2) put(tag, 0, "KEEPING");
+    else put_num(tag, put(tag, 0, "EDIT KEY "), st.ed_key + 1u);
+    veffui::Column col[4];
+    const u32 sp = edit::span(st.ed_total, st.ed_zoom);
+    if (shift) {
+        put(v0, 0, "PRESS"); put(v1, 0, st.clip_frames ? "PRESS" : "-"); put(v2, 0, "PRESS"); put(v3, 0, "PRESS");
+        col[0].label = "COPY"; col[0].value = v0; col[0].frac = 0;
+        col[1].label = "PASTE"; col[1].value = v1; col[1].frac = st.clip_frames ? 1024 : 0;
+        col[2].label = "DONE"; col[2].value = v2; col[2].frac = 0;
+        col[3].label = "UNDO"; col[3].value = v3; col[3].frac = 0;
+    } else {
+        put_ms(v0, 0, st.ed_start); put_ms(v1, 0, st.ed_end - st.ed_start + 1u); put_ms(v2, 0, sp); put(v3, 0, "SNAP");
+        col[0].label = "START"; col[0].value = v0; col[0].frac = st.ed_total ? (int)udiv((st.ed_start >> 6) * 1024u, (st.ed_total >> 6) + 1u) : 0;
+        col[1].label = "LENGTH"; col[1].value = v1; col[1].frac = st.ed_total ? (int)udiv((st.ed_end >> 6) * 1024u, (st.ed_total >> 6) + 1u) : 0;
+        col[2].label = "ZOOM"; col[2].value = v2; col[2].frac = (int)udiv(st.ed_zoom * 1024u, (u32)edit::ZOOMS - 1u);
+        col[3].label = "NUDGE"; col[3].value = v3; col[3].frac = 512;
+    }
+    veffui::page(c, "CHOP", -1, col, tag, 1);
+    const u32 first = st.zc_first, span = st.zc_span ? st.zc_span : 1u;
+    const u32 scale = udiv((u32)WW << 16, span);                                    // pixels a frame, 16 bits behind the point
+    op1f_paint_line(c, WX, WMID, WX + WW - 1, WMID, 1, VEFF_DARK);
+    u32 peak = 64;                                                                  // the view drawn to its own loudest column
+    for (int i = 0; i < COLS; ++i) if (st.zc[i] > peak) peak = st.zc[i];
+    const u32 hscale = udiv((u32)WHALF << 16, peak);
+    for (int i = 0; i < COLS; ++i) {
+        const u32 h = (st.zc[i] * hscale) >> 16;
+        if (!h) continue;
+        const u32 f = first + udiv((u32)i * span, (u32)COLS);
+        const int in_key = f >= st.ed_start && f <= st.ed_end;
+        op1f_paint_box(c, WX + 2 * i, WMID - (int)h, 2, 2 * (int)h + 1, in_key ? VEFF_PINK : VEFF_GREY);
+    }
+    if (st.ed_start >= first && st.ed_start < first + span) {
+        const int x = WX + (int)(((st.ed_start - first) * scale) >> 16);
+        op1f_paint_line(c, x, WY0 - 4, x, WMID + WHALF + 4, 1, VEFF_WHITE);
+    }
+    if (st.ed_end >= first && st.ed_end < first + span) {
+        const int x = WX + (int)(((st.ed_end - first) * scale) >> 16);
+        op1f_paint_line(c, x, WY0 - 4, x, WMID + WHALF + 4, 1, VEFF_PINK);
+    }
+    if (st.ed_playing && st.ed_play_frame >= first && st.ed_play_frame < first + span) {
+        const int x = WX + (int)(((st.ed_play_frame - first) * scale) >> 16);
+        op1f_paint_box(c, x, WY0 - 2, 2, WHALF * 2 + 6, VEFF_WHITE);
+    }
+    // where the view lies in the whole: a bar under the wave
+    const u32 whole = st.ed_total ? st.ed_total : 1u;
+    const int bx = WX + (int)udiv((first >> 6) * (u32)WW, (whole >> 6) + 1u), bw = 1 + (int)udiv((span >> 6) * (u32)WW, (whole >> 6) + 1u);
+    op1f_paint_box(c, WX, STRIP_Y + 6, WW, 2, VEFF_DARK);
+    op1f_paint_box(c, bx, STRIP_Y + 4, bw, 6, VEFF_WHITE);
+}
+
 static void paint(void* c, u32 ms, int shift) {
     op1f_paint_box(c, 0, 0, 480, 224, OP1F_COLOUR(0, 0, 0));
+    if (st.editing && page_up()) { paint_edit(c, ms, shift); return; }   // v8
     char tag[32];
     tag[0] = 0;
     const int ready = st.state == READY;
@@ -663,6 +1024,8 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
     watch(now->ms);
     if (st.armed && (st.state != READY || st.at.slot != st.armed_slot)) lazy_disarm(now->ms, 0, "the sample changed");   // v7
     lazy_frame();                                        // v7
+    if (st.editing && (st.state != READY || st.at.slot != st.ed_slot || !page_up())) edit_leave("the sample or the page changed");
+    edit_frame(now->ms);                                 // v8
     if (st.state == READY && was == READY && st.dirty) {    // v2: never in the frame the analysis ends
         st.dirty = 0;
         if (st.p.mode == LAZY) lazy::slices(st.taps, an.frames, sl);              // v7: LAZY is the taps
@@ -673,6 +1036,15 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         const u32 p = pressed[i], ps = pressed_shift[i];
         const int hit = p != st.press_seen[i], hit_s = ps != st.press_shift_seen[i];
         st.press_seen[i] = p; st.press_shift_seen[i] = ps;
+        if (st.editing && page_up()) {                                              // v8: EDIT's own presses
+            if (i == 3 && hit) edit_snap();
+            if (i == 0 && hit_s) copy_begin(now->ms);
+            if (i == 1 && hit_s) paste_begin(now->ms);
+            if (i == 2 && hit_s) edit_leave("shift and knob 3");
+            if (i == 3 && hit_s) { edit_leave("undo"); undo(now->ms); }
+            continue;
+        }
+        if (i == 2 && hit_s && page_up() && !st.armed) { edit_enter(now->ms); continue; }   // v8: shift and knob 3: EDIT
         if (i == 0 && hit && page_up() && st.p.mode == LAZY) {                     // v7: ARM, and again DISARM
             if (st.armed) lazy_disarm(now->ms, 1, "knob 1 pressed again");
             else lazy_arm(now->ms);
@@ -698,6 +1070,10 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         const u32 n = sk & 0xffu;
         const int k = drum_key_of(n);
         st.struck_at = now->ms; st.struck_valid = k >= 0; st.struck_key = k >= 0 ? (u32)k : 0;
+        if (st.editing && k >= 0 && (u32)k != st.ed_key) {                          // v8: another key struck: it is edited now
+            Where w;
+            if (same_sample(w)) { edit_load(w, (u32)k); op1f_log(3, LOG_FILE, 21, "veffchop: edit on slot %u, key %u: frames %u-%u of %u", w.slot + 1, st.ed_key + 1, st.ed_start, st.ed_end, st.ed_total); }
+        }
         if (n < 64u && !(st.keys_logged[n >> 5] & (1u << (n & 31u)))) {     // each number once: the key map, to settle
             st.keys_logged[n >> 5] |= 1u << (n & 31u);
             op1f_log(3, LOG_FILE, 9, "veffchop: keyboard key %u struck, taken as drum key %d (0: none)", n, k + 1);

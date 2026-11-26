@@ -23,11 +23,11 @@ def main(argv):
     with open(recipe_path, encoding="utf-8") as f:
         recipe = json.load(f)
     faults = []
-    if recipe.get("version") not in (4, 5, 6, 7):
+    if recipe.get("version") not in (4, 5, 6, 7, 8):
         faults.append("the recipe's version is %r, not 4" % recipe.get("version"))
     asks = recipe["card"]["asks"]
-    if len(asks) != 1:
-        faults.append("the card has %d asks, not one" % len(asks))
+    if len(asks) not in (1, 2) or (len(asks) == 2 and asks[1].get("kind") != "memory"):
+        faults.append("the card has %d asks: the drum engine first, then (v8) the memory of the copy" % len(asks))
     try:
         ask = pb.drum_page_of_card(1, asks[0], [])
         if ask != (12, "veffchop", 0, {"shown": "veffchop_shown"}, {}):

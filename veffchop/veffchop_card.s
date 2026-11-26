@@ -31,7 +31,7 @@ op1f_card_veffchop_drum_engine:
 .global op1f_card_veffchop
 .type op1f_card_veffchop, STT_OBJECT
 op1f_card_veffchop:
-    .long 0x44524143, 64, 10, 7
+    .long 0x44524143, 64, 10, 8
     .ascii "veffchop"
     .fill 8, 1, 0
     .long veffchop_frame
@@ -41,7 +41,7 @@ op1f_card_veffchop:
     .long op1f_card_veffchop_folders
     .long 1
     .long op1f_card_veffchop_asks
-    .long 1
+    .long 2
 .size op1f_card_veffchop, .-op1f_card_veffchop
 .global op1f_card_veffchop_folders
 .type op1f_card_veffchop_folders, STT_OBJECT
@@ -56,6 +56,7 @@ op1f_card_veffchop_folders:
 .type op1f_card_veffchop_asks, STT_OBJECT
 op1f_card_veffchop_asks:
     .long 12, 28, op1f_card_veffchop_ask_0
+    .long 4, 36, op1f_card_veffchop_ask_1
 .size op1f_card_veffchop_asks, .-op1f_card_veffchop_asks
 .global op1f_card_veffchop_ask_0
 .type op1f_card_veffchop_ask_0, STT_OBJECT
@@ -66,3 +67,14 @@ op1f_card_veffchop_ask_0:
     .long 0
     .long veffchop_shown
 .size op1f_card_veffchop_ask_0, .-op1f_card_veffchop_ask_0
+.global op1f_card_veffchop_ask_1
+.type op1f_card_veffchop_ask_1, STT_OBJECT
+op1f_card_veffchop_ask_1:
+    .long 36
+    .ascii "clip"
+    .fill 12, 1, 0
+    .long 0
+    .long 0
+    .long 1764000
+    .long 4
+.size op1f_card_veffchop_ask_1, .-op1f_card_veffchop_ask_1
