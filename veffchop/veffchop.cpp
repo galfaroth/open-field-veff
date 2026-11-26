@@ -195,7 +195,13 @@ static int drum_key_of(u32 n) {
 
 // ---------------------------------------------------------------- the frame function's own
 enum State { WAITING = 0, STEADYING, ANALYSING, READY, REFUSED, FINISHING };
-static Analysis an;
+// v9: the analysis (some 55 KB) lives in the memory ask behind the copy's room, not in the pack's zeroed data, which
+// counts against the room for pack files on the unit. Set at the first frame the memory is there; nothing reads it
+// before (the frame function waits for it).
+enum { ANALYSIS_ROOM = 57344 };
+static_assert(sizeof(Analysis) <= (unsigned)ANALYSIS_ROOM, "the analysis fits its room in the memory ask");
+static Analysis* analysis;
+#define an (*analysis)
 static Slices sl;
 static int key_slice[KEYS];
 static struct {
@@ -1012,6 +1018,18 @@ extern "C" void veffchop_frame(const Op1fFrame* now) {
         return;                                          // nothing else in the first frame
     }
     if (!st.stood && op1f_page_stand_in(&op1f_card_veffchop, ASK, 0)) st.stood = 1;
+    if (!analysis) {                                                                // v9: the memory first
+        char* m = (char*)op1f_memory(&op1f_card_veffchop, (unsigned)CLIP_ASK);
+        if (!m) {
+            if (now->page == &op1f_card_veffchop && now->canvas) {
+                op1f_paint_box(now->canvas, 0, 0, 480, 224, OP1F_COLOUR(0, 0, 0));
+                veffui::text(now->canvas, WX, 70, "WAITING FOR MEMORY", VEFF_GREY, 3, 3);
+            }
+            return;
+        }
+        analysis = (Analysis*)(m + edit::CLIP_BYTES);
+        op1f_log(3, LOG_FILE, 31, "veffchop: memory at %08x: the copy's room, then the analysis", (u32)(unsigned long)m);
+    }
     if (shown_where != st.shown_where_seen || shown_how != st.shown_how_seen) {
         st.shown_where_seen = shown_where; st.shown_how_seen = shown_how;
         op1f_log(3, LOG_FILE, 8, "veffchop: drum engine page %s (where %u, how %u)", page_up() ? "up" : "off", st.shown_where_seen, st.shown_how_seen);

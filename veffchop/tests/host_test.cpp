@@ -83,7 +83,7 @@ extern "C" int op1f_sample_get(const Op1fCard*, unsigned place, Op1fSample* out)
 }
 extern "C" int op1f_sample_drop(const Op1fCard*, unsigned, unsigned place) { ++drop_calls; drop_place_seen = place; return mock_drop_answer; }
 // v8: the memory ask (1, the copy) and the drum mark
-static std::vector<short> clip_memory(882000, 0);
+static std::vector<short> clip_memory((1764000 + 57344) / 2, 0);   // v9: the copy's room, then the analysis
 static bool memory_given = true;
 extern "C" void* op1f_memory(const Op1fCard*, unsigned ask) { return ask == 1 && memory_given ? clip_memory.data() : nullptr; }
 static u32 changed_calls = 0, changed_place = 0;
