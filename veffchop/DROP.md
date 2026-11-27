@@ -1,6 +1,6 @@
 # veffchop 6: mono samples, and a drop on the page
 
-OS 1.7.3+0. **Version 6 has not run on a unit.**
+OS 1.7.3+0. Drops on the page were made on one unit (version 10, on a test build of the drum engine's base before its release as 0.25).
 
 ## Mono
 
@@ -15,8 +15,8 @@ writes a mono kit's points as fractions of 529,200 (`q31_of_frame(f, 529200)`, e
 **Why nothing happened on v4's page.** The drop key goes to the screen shown; on veffchop's page that is the base's
 lent screen, which has no drop.
 
-**What v6 does.** It uses the base's sample helpers (docs/sample.md in open-field-catalog, from base 40 for a drum
-place, commit 3914b2f on `drum-page`): on the drop key's down (no shift) the key is taken; on its up the input
+**What v6 does.** It uses the base's sample helpers (docs/sample.md in open-field-catalog, from base 43 for a drum
+place): on the drop key's down (no shift) the key is taken; on its up the input
 function asks `op1f_sample_drop(card, 0, OP1F_PLACE_DRUM + slot)` (ask 0, veffchop's drum engine) and stores the answer;
 the frame function reads `op1f_sample_get` for that place until `done` is the ticket. The unit does the drum sampler
 page's own drop in its own turn (the base's DD at the drum drop job). Nothing of the firmware's is called by the pack.

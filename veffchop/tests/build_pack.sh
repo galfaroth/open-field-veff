@@ -1,14 +1,14 @@
 #!/bin/sh
-# Builds veffchop.pack into this repository's root, inside a temporary root of links to an open-field-catalog checkout at drum-page (base 40,
+# Builds veffchop.pack into this repository's root, inside a temporary root of links to an open-field-catalog checkout at base 43 or later (open-field 0.25,
 # its drum engine); tests/recipe_check.py holds the recipe and the built pack to the drum engine's ask and mark
 # (nothing is written into the checkout), and REFUSES a pack that needs a name which is not open-field's:
-#   OPEN_FIELD=<the open-field-catalog checkout at drum-page (base 40)> sh veffchop/tests/build_pack.sh
+#   OPEN_FIELD=<the open-field-catalog checkout at base 43 or later (open-field 0.25)> sh veffchop/tests/build_pack.sh
 # The unit has no C library: a memcpy, memset or libgcc routine the compiler made up leaves the pack out at the start.
 # tests/needs.py looks at the compiler's assembly, and the 'wants:' line of pack_build.py check is looked at too.
 set -e
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH
 WT="$(cd "$(dirname "$0")/../.." && pwd)"
-OF="${OPEN_FIELD:?set OPEN_FIELD to an open-field-catalog checkout at drum-page (base 40)}"; OF="$(cd "$OF" && pwd)"
+OF="${OPEN_FIELD:?set OPEN_FIELD to an open-field-catalog checkout at base 43 or later (open-field 0.25)}"; OF="$(cd "$OF" && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 for d in tools module profiles linker open-xy; do ln -s "$OF/$d" "$W/$d"; done
 mkdir -p "$W/veff" "$W/out" "$W/build"; ln -s "$WT/veffchop" "$W/veff/veffchop"

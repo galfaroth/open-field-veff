@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""veffchop 4's recipe and pack against an open-field-catalog checkout at drum-page (base 40's drum engine).
+"""veffchop 4's recipe and pack against an open-field-catalog checkout at base 43 or later (open-field 0.25, the drum engine).
 
   python3 -I veffchop/tests/recipe_check.py <the checkout> <veffchop/recipe.json> [<the pack's `check` text>]
 
@@ -35,7 +35,7 @@ def main(argv):
     except ValueError as e:
         faults.append("the checkout's pack_build refuses the ask: %s" % e)
     if pb.KIND_WORDS_6.get(12) != "drum engine" or pb.DRUM_PAGE_MARK != "op1f_drum_engine_1":
-        faults.append("the checkout is not at base 40's drum engine")
+        faults.append("the checkout is not at base 43's drum engine")
     text = json.dumps(recipe)
     if "drum page" in text or "op1f_drum_page_1" in text:
         faults.append("the recipe still names the drum's page of the form before")

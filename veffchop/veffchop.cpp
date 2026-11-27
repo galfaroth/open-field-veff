@@ -1,6 +1,6 @@
 // veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3 (1.7.3+0) only. Version 6: mono
 // samples too, and the drop key on the page through the base's op1f_sample_drop (DROP.md). Version 4: a drum
-// engine (base 40, OP1F_ASK_DRUM_ENGINE, docs/drum-engine.md): 'veffchop' stands in the drum's engine list, rides the
+// engine (base 43, OP1F_ASK_DRUM_ENGINE, docs/drum-engine.md): 'veffchop' stands in the drum's engine list, rides the
 // drum sampler, and once picked on a drum sound its page stands on T1 in the drum's mode; it plays nothing itself and
 // lets every keyboard key through to the kit. veffdrumprobe/FINDINGS.md (sections 6 and 7) says where every address comes from.
 //
@@ -970,7 +970,7 @@ static void paint(void* c, u32 ms, int shift) {
     }
 }
 
-// ---------------------------------------------------------------- v6: the drop, by the base (docs/sample.md, base 40)
+// ---------------------------------------------------------------- v6: the drop, by the base (docs/sample.md, base 43)
 // The input function asks op1f_sample_drop on the drop key's up (it only stores the answer); the frame function reads
 // op1f_sample_get until `done` is the ticket, then says how it ended and has the sample analysed again. Nothing of the
 // firmware's is called here: the unit does the drum sampler page's own drop in its turn.

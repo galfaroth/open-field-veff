@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds and runs veffchop's host test under the address and undefined-behaviour sanitizers, then turns the page's
 # PPM files into PNG (python's zlib only).
-#   OPEN_FIELD  an open-field-catalog checkout at drum-page (base 40), for module/build_r6e_card.h
+#   OPEN_FIELD  an open-field-catalog checkout at base 43 or later (open-field 0.25), for module/build_r6e_card.h
 #   first argument: the folder for the pictures (default: ./renders, made if missing)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-of=${OPEN_FIELD:?set OPEN_FIELD to an open-field-catalog checkout at drum-page (base 40)}
+of=${OPEN_FIELD:?set OPEN_FIELD to an open-field-catalog checkout at base 43 or later (open-field 0.25)}
 out=${1:-./renders}
 mkdir -p "$out"
 bin="$out/host_test"

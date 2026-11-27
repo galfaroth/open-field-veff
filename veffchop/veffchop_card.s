@@ -13,8 +13,8 @@
  * the card, each ask's table follows the list, the list of names of an ask of places follows its table, and an
  * engine's list of sounds and their texts follow its table.
  * Level 10 adds no kind of ask: its mark is that of a base that offers op1f_param_heard, the value as heard.
- * Base 40 (module/build_r6e_card.h, "Base 40: a drum engine"): the card asks for a drum engine, so a
- * word in front of it names the mark op1f_drum_engine_1, and a base before 40 leaves the pack out. Nothing reads it.
+ * Base 43 (module/build_r6e_card.h, "Base 43: a drum engine"): the card asks for a drum engine, so a
+ * word in front of it names the mark op1f_drum_engine_1, and a base before 43 leaves the pack out. Nothing reads it.
  */
 .section .rodata
 .balign 4
