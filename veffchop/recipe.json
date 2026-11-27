@@ -1,0 +1,44 @@
+{
+  "about": "veffchop: chops the current drum kit's sample into the 24 drum keys, for OS 1.7.3. Version 10: a drum engine (base 43, OP1F_ASK_DRUM_ENGINE): 'veffchop' stands in the drum's engine list (shift and T1 in the drum's mode); picked on a drum sound that plays the drum sampler, the sound plays the drum sampler as before and T1 shows veffchop's page, which plays nothing itself and lets every keyboard key through to the kit; the sound's file keeps the pick. The page shows the sample's wave, the cuts as the knobs move them and which slice each key plays. Modes: transient (sensitivity), lazy (as on the OP-1 and OP-XY: knob 1's press arms it, key 1 plays the whole sample, every tap of another key or of knob 2 marks a cut there), equal (N parts); mapping in order or onto the stock kit's layout, with or without wrap. A press of the fourth knob writes the 24 start/end points of the current slot; shift and that press puts the kit's own back. Mono and stereo samples. The drop key (11) on the page asks the base to drop a lifted tape cut into the drum sound's sample (op1f_sample_drop, base 40: the drum sampler page's own drop, in the unit's turn), then the sample is analysed again. EDIT (shift and knob 3, on the key last struck): its start, its length, a zoomed wave and a nudge, written live; COPY and PASTE of a key's sound between keys and kits, the paste behind the slot's material, kept by the unit (op1f_sample_changed). It changes no place of the firmware and needs base 40's drum engine (op1f_drum_engine_1).",
+  "name": "veffchop",
+  "version": 10,
+  "interface": 1,
+  "build": "veff_veffchop",
+  "sources": [
+    "veff/veffchop/veffchop.cpp",
+    "veff/veffchop/veffchop_card.s"
+  ],
+  "works_with": [],
+  "serves": [],
+  "exports": [],
+  "pictures": [],
+  "card": {
+    "level": 10,
+    "frame": "veffchop_frame",
+    "pick": null,
+    "pictures": false,
+    "input": "veffchop_input",
+    "folders": [
+      {
+        "shown": false
+      }
+    ],
+    "asks": [
+      {
+        "kind": "drum engine",
+        "name": "veffchop",
+        "shown": "veffchop_shown"
+      },
+      {
+        "kind": "memory",
+        "name": "clip",
+        "bytes": 1821344,
+        "align": 4
+      }
+    ]
+  },
+  "marks": [],
+  "named": true,
+  "sum": true,
+  "path": null
+}

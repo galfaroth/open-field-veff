@@ -19,7 +19,7 @@ Cycles are per block (64 frames, stereo), measured on a unit. The effect limit i
 | veffrrrr | A two-stage distortion in serial routing. Knobs: drive, s1, s2, mix. With shift held: four sub-pages (s1, s2, fb, out); shift and a press of the 1st knob steps between them. Mix starts at 15%. | `nitro` | ~61,000-65,000 average; 82,000-86,000 at heavy settings (a cheaper version is in progress) | [`veffrrrr.pack`](veffrrrr.pack) |
 | veffgraindelay | A grain delay in the spirit of Grain Delay: grains read from a stereo delay line, each with its own place and pitch. Knobs: pitch, spray, feedback, mix. With shift held: delay (note or ms), freq, random, spread, reverse. Starts as an octave-up shimmer on the eighth note. | `delay` | ~23,000-26,000 average, 34,769 at most in a first session (declared 56,000) | [`veffgraindelay.pack`](veffgraindelay.pack) |
 
-One engine too: **veffgranular**, a granular sample synth in the unit's list of engines ([below](#engine-veffgranular)). File: [`veffgranular.pack`](veffgranular.pack).
+Two engines too: **veffgranular**, a granular sample synth in the synth's list of engines ([below](#engine-veffgranular), [`veffgranular.pack`](veffgranular.pack)), and **veffchop**, a drum engine that chops the drum sampler's sample into the 24 keys ([below](#drum-engine-veffchop), [`veffchop.pack`](veffchop.pack); needs open-field 0.25).
 
 ## Controls
 
@@ -196,6 +196,45 @@ Version 2's shape, reverse and the two random values add nothing a frame that co
 ### Tested on a computer
 
 `sh veffgranular/tests/run_tests.sh <folder>` builds the DSP and the file reader (`granular_core.h`, `sample_file.h`, which call nothing of the unit's) with the address and undefined-behaviour sanitizers and runs them: renders of each mode as WAV files into the folder, the pitch of a 440 Hz sine at three notes and a tune, silence in and silence out, no grain left after a release, two renders alike, mono and stereo, samples of 2 to 1,000 frames, a region moved and a sample replaced under a held note, invalid sources, and the reader on good files, every cut of them and 20,000 random ones. Version 2 adds: single grains over a constant sample at every shape, size and direction (no step steeper than a 16-frame edge allows, the top where the shape puts it), overlapping grains keeping the even bell's level, 148 reversed runs with a region that is not at 0 (no read outside it), a reversed grain shown to read a ramp downward, and the sampler's region from the fields the probe printed.
+
+## Drum engine: veffchop
+
+<img src="pictures/veffchop.png" alt="veffchop" width="480">
+
+A drum engine, in the drum's own list of **engines** (shift and T1 on a drum sound), as `veffgranular` is a synth engine: it chops the drum sampler's sample into the 24 drum keys, by its transients, by taps while it plays (lazy chop, as on the OP-1 and the OP-XY), or into equal parts, and lets you edit, copy and paste each key. **Needs open-field 0.25 (base 43) or later**; an older base leaves it out (`nobody offers the name it needs, op1f_drum_engine_1`). OS 1.7.3+0 only.
+
+**How to start.** On a drum sound that plays the drum sampler, shift and T1 and pick `veffchop`. The sound goes on playing its kit; T1 now shows veffchop's page instead of the sampler's. Picking the drum sampler or `dbox` again brings the unit's own page back. The sound's file keeps the pick; without the pack it loads as a plain drum sampler kit. Picked on a `dbox` sound it does nothing (pick the drum sampler there first).
+
+**The page.** The whole sample's wave, a white line at each cut with the slice's number, moving as soon as a knob turns. Under it the 24 keys, each with its slice's number and colour (`-`: the key keeps the kit's own points). A key struck lights its slice and a pink marker runs across it. The tag after the title says how many slices, `ANALYSING n%`, or why nothing can be chopped. **Hold shift** and the columns of the shift-presses say what each press does.
+
+| Knob | Turn | Press | Shift + turn | Shift + press |
+| --- | --- | --- | --- | --- |
+| 1 (blue) | MODE: TRANSIENT, LAZY, EQUAL | LAZY: arm / disarm | OFFSET 0..20 ms (cuts earlier) | |
+| 2 (ochre) | SENS 0..100 (transient), PARTS 2..24 (equal) | LAZY: a cut here | GAP 20..500 ms (closer cuts merged) | |
+| 3 (grey) | MAP: ORDER, WRAP, KIT, KIT+WRAP | | | EDIT the key last struck (`EDIT THIS SAMPLE`: key 1) |
+| 4 (red) | | APPLY: writes the slices onto the keys | | UNDO: the kit's own points back |
+
+In EDIT:
+
+| Knob | Turn | Press | Shift + press |
+| --- | --- | --- | --- |
+| 1 | START | | COPY this key's sound |
+| 2 | END (shown as the length) | | PASTE the copy onto the key last struck |
+| 3 | ZOOM (whole sample down to 5 ms) | | LEAVE EDIT |
+| 4 | NUDGE the whole key | SNAP start and end to zero crossings | UNDO the whole session |
+
+- **TRANSIENT**: the onsets at least as strong as SENS asks (the strongest 23 when more pass), cut just before the hit. **EQUAL**: N equal parts.
+- **LAZY**: turn to LAZY and press knob 1 (ARM): key 1 becomes the whole sample. Play key 1; while it plays, tap any other key (or press knob 2) wherever a slice should start: a cut appears there, on the nearest zero crossing. Press knob 4 to apply. Shift and knob 4 clears the taps; knob 1 again disarms.
+- **MAP**: ORDER puts slice 1 on key 1 and on. KIT follows the stock layout: the two strongest low slices on keys 1-2 (kick), the two brightest on 9 and 11 (hats), the strongest middle one on 3-4 (snare), the rest in order. WRAP fills the keys past the last slice from slice 1 again; without it they keep the kit's own points.
+- **EDIT**: strike a key, then shift and knob 3. Every change is written at once, so strike the key to hear it; striking another key edits that one.
+- **COPY / PASTE** (in EDIT): copy a key's sound (up to 10 s stereo, 20 s mono), strike a key in this kit or in another drum sound with veffchop, and paste: the sound is written behind the sample's material, converted to the slot's mono or stereo, and that key plays it. The tag says `PASTED AND KEPT` once the unit has been asked to keep the sample. When the slot's room (882,000 stereo or 529,200 mono frames) is too small it says `NEEDS x MS MORE`.
+- **Drop**: lift a cut on the tape, open veffchop's page and press drop: the base drops the cut into the drum sound's sample as the drum sampler's page does, and veffchop analyses it (`N SLICES`). Press knob 4 to apply. More in [`veffchop/DROP.md`](veffchop/DROP.md).
+- Mono and stereo samples both work.
+- APPLY, EDIT and PASTE write only each key's start and end; pitch, play mode, pan and volume are never touched. UNDO puts back the points the kit had at the first apply.
+
+**What was tried on a unit** (one unit, OS 1.7.3, a test build of the drum engine's base): picking it, the page, the three modes, applying, EDIT, copy and paste, a drop and undo. Not known yet: whether a pasted sound past the length the kit was loaded with survives a save and a restart, and whether a stock save of the kit keeps the new points. Where the kit's points lie was read with `veffdrumprobe` (`veffdrumprobe/FINDINGS.md`).
+
+**Tested on a computer** under the address and undefined-behaviour sanitizers: `OPEN_FIELD=<open-field-catalog, base 43 or later> sh veffchop/tests/run_tests.sh <folder>`: exact point conversion for every frame, onsets on synthetic loops with known hits, lazy cuts, equal parts, the mappings, the order of the writes, undo, the refusals, the work a frame, and the page as pictures. `veffchop/tests/build_pack.sh` builds the pack and refuses one that needs a name other than open-field's.
 
 ## Thumbnails
 
